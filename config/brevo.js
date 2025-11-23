@@ -10,22 +10,45 @@ const brevoConfig = {
   port: parseInt(process.env.BREVO_SMTP_PORT || '587'),
   secure: false, // true for 465, false for other ports
   auth: {
-    user: process.env.BREVO_SMTP_USER || '9c4c2e001@smtp-brevo.com',
-    pass: process.env.BREVO_SMTP_PASS || '4KAWYxSaz20Ls8Bd'
-  }
+    user: process.env.BREVO_SMTP_USER || process.env.BREVO_API_KEY?.split('-')[0] + '@smtp-brevo.com' || '9c4c2e001@smtp-brevo.com',
+    pass: process.env.BREVO_SMTP_PASS || process.env.BREVO_API_KEY || '4KAWYxSaz20Ls8Bd'
+  },
+  // Add connection timeout settings for Render
+  connectionTimeout: 10000, // 10 seconds
+  greetingTimeout: 10000,
+  socketTimeout: 10000,
+  // Retry configuration
+  pool: true,
+  maxConnections: 1,
+  maxMessages: 3
 };
 
 // Create reusable transporter
 const transporter = nodemailer.createTransport(brevoConfig);
 
-// Verify transporter configuration
-transporter.verify(function (error, success) {
-  if (error) {
-    console.error('Brevo SMTP configuration error:', error);
-  } else {
-    console.log('✅ Brevo SMTP server is ready to send emails');
-  }
-});
+// Verify transporter configuration (non-blocking, with timeout)
+// Don't block server startup if SMTP verification fails
+const verifyTransporter = () => {
+  transporter.verify(function (error, success) {
+    if (error) {
+      console.error('⚠️  Brevo SMTP configuration error:', error.message);
+      console.error('⚠️  Email functionality may not work. Check your Brevo credentials and network settings.');
+      // In production, don't crash - email will fail gracefully
+      if (process.env.NODE_ENV === 'production') {
+        console.log('ℹ️  Server will continue running. Email sending will be attempted but may fail.');
+      }
+    } else {
+      console.log('✅ Brevo SMTP server is ready to send emails');
+    }
+  });
+};
+
+// Only verify in development or if explicitly enabled
+// On Render, SMTP connections can timeout, so we skip verification on startup
+if (process.env.NODE_ENV !== 'production' || process.env.VERIFY_SMTP === 'true') {
+  // Use setTimeout to make it non-blocking
+  setTimeout(verifyTransporter, 1000);
+}
 
 /**
  * Send OTP email using Brevo SMTP
@@ -84,7 +107,22 @@ const sendOTPEmail = async (toEmail, otp, purpose = 'verification', name = 'ther
       };
     }
 
-    // In production, throw error
+    // In production, if SMTP fails, log OTP to console as fallback
+    // This allows the app to continue working even if email service is down
+    if (process.env.NODE_ENV === 'production') {
+      console.error(`\n⚠️  Email sending failed for ${toEmail}`);
+      console.error(`📧 OTP (for manual verification): ${otp}`);
+      console.error(`Error: ${error.message}`);
+      
+      // Return a warning instead of throwing - allows app to continue
+      return {
+        success: false,
+        warning: 'Email service temporarily unavailable. OTP logged to server console.',
+        error: error.message
+      };
+    }
+
+    // In other cases, throw error
     throw error;
   }
 };
