@@ -682,21 +682,26 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
 // Get URLs from environment variables with production defaults
-// For Render backend: https://know-how-cafe-backend.onrender.com
-// For Vercel frontend: https://knowhow-demo1.vercel.app
+// For Render backend: https://knowhow-backend.onrender.com
+// For Vercel frontend: https://know-how-frontend.vercel.app
 const FRONTEND_URL = process.env.FRONTEND_URL || 
   (process.env.NODE_ENV === 'production' 
-    ? 'https://knowhow-demo1.vercel.app' 
-    : 'http://localhost:5173');
+    ? 'https://know-how-frontend.vercel.app' 
+    : 'http://localhost:8080'); // Frontend runs on port 8080 (see vite.config.ts)
 const BACKEND_URL = process.env.BACKEND_URL || 
   (process.env.NODE_ENV === 'production' 
-    ? 'https://know-how-cafe-backend.onrender.com' 
+    ? 'https://knowhow-backend.onrender.com' 
     : 'http://localhost:3000');
 
 // Google OAuth - Initiate (redirects to Google)
 router.get('/google', (req, res) => {
+  console.log('🔵 Google OAuth route hit - /api/auth/google');
+  console.log('   Request URL:', req.url);
+  console.log('   Request method:', req.method);
+  console.log('   Headers:', req.headers);
+  
   if (!GOOGLE_CLIENT_ID) {
-    console.error('Google OAuth Error: GOOGLE_CLIENT_ID is not set in environment variables');
+    console.error('❌ Google OAuth Error: GOOGLE_CLIENT_ID is not set in environment variables');
     return res.status(500).json({
       success: false,
       message: 'Google OAuth is not configured. Please check your environment variables.'
@@ -704,10 +709,11 @@ router.get('/google', (req, res) => {
   }
 
   const redirectUri = `${BACKEND_URL}/api/auth/google/callback`;
-  console.log('Google OAuth Initiated:', {
+  console.log('✅ Google OAuth Initiated:', {
     redirectUri,
     backendUrl: BACKEND_URL,
-    frontendUrl: FRONTEND_URL
+    frontendUrl: FRONTEND_URL,
+    clientId: GOOGLE_CLIENT_ID ? GOOGLE_CLIENT_ID.substring(0, 20) + '...' : 'NOT SET'
   });
 
   const scope = 'openid email profile';

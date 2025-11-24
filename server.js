@@ -63,6 +63,13 @@ app.get('/health', (req, res) => {
 // API routes
 app.use('/api/auth', authRoutes);
 
+// Log available routes on startup
+console.log('📋 Registered API routes:');
+console.log('   GET  /api/auth/google - Google OAuth initiation');
+console.log('   GET  /api/auth/google/callback - Google OAuth callback');
+console.log('   POST /api/auth/signup/send-otp - Send signup OTP');
+console.log('   POST /api/auth/login - User login');
+
 // Error handler
 app.use((err, req, res, next) => {
   console.error('Error:', err);
@@ -82,9 +89,17 @@ app.use((err, req, res, next) => {
 
 // 404 handler
 app.use((req, res) => {
+  console.log('❌ 404 - Route not found:', {
+    method: req.method,
+    url: req.url,
+    path: req.path,
+    originalUrl: req.originalUrl
+  });
   res.status(404).json({
     success: false,
-    message: 'Route not found'
+    message: 'Route not found',
+    requestedPath: req.path,
+    method: req.method
   });
 });
 
