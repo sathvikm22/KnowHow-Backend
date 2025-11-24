@@ -26,8 +26,8 @@ const corsOptions = {
       'http://127.0.0.1:3000',
       
       // Production - Vercel frontend
-      'https://knowhow-demo1.vercel.app',
-      'https://www.knowhow-demo1.vercel.app'
+      'https://know-how-frontend.vercel.app',
+      'https://www.know-how-frontend.vercel.app'
     ];
 
     if (allowedOrigins.includes(origin)) {
