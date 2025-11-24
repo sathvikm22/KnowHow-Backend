@@ -68,19 +68,36 @@ router.post('/signup/send-otp', async (req, res) => {
       });
     }
 
-    // Send OTP via email (non-blocking in development)
+    // Send OTP via email
     const emailResult = await sendOTPEmail(email, otp, 'verification', name);
     
-    // Log OTP to console in development for easy testing
-    if (process.env.NODE_ENV === 'development') {
-      console.log(`\n📧 OTP for ${email}: ${otp}\n`);
+    // Log result
+    if (emailResult.success) {
+      console.log(`✅ Email sent successfully to ${email}`);
+    } else {
+      console.error(`❌ Email failed for ${email}:`, emailResult.error);
+      // In development, include OTP in response for testing
+      if (process.env.NODE_ENV === 'development' && emailResult.otp) {
+        console.log(`📧 OTP for ${email}: ${otp}`);
+      }
     }
 
-    res.json({ 
+    // Return response - include OTP in development for testing
+    const response = { 
       success: true, 
-      message: emailResult.warning || 'OTP sent to your email',
+      message: emailResult.success 
+        ? 'OTP sent to your email' 
+        : (emailResult.warning || 'OTP generated. Check server logs if email not received.'),
       expiresIn: 120 // 2 minutes in seconds
-    });
+    };
+
+    // In development, include OTP in response for easy testing
+    if (process.env.NODE_ENV === 'development' && !emailResult.success) {
+      response.otp = otp;
+      response.debug = 'Email not sent. OTP included for testing.';
+    }
+
+    res.json(response);
   } catch (error) {
     console.error('Error in send-otp:', error);
     res.status(500).json({ 
@@ -388,19 +405,36 @@ router.post('/forgot-password/send-otp', async (req, res) => {
       });
     }
 
-    // Send OTP via email (non-blocking in development)
+    // Send OTP via email
     const emailResult = await sendOTPEmail(email, otp, 'password_reset', user.name || 'there');
     
-    // Log OTP to console in development for easy testing
-    if (process.env.NODE_ENV === 'development') {
-      console.log(`\n📧 Password Reset OTP for ${email}: ${otp}\n`);
+    // Log result
+    if (emailResult.success) {
+      console.log(`✅ Password reset email sent successfully to ${email}`);
+    } else {
+      console.error(`❌ Password reset email failed for ${email}:`, emailResult.error);
+      // In development, include OTP in response for testing
+      if (process.env.NODE_ENV === 'development' && emailResult.otp) {
+        console.log(`📧 Password Reset OTP for ${email}: ${otp}`);
+      }
     }
 
-    res.json({ 
+    // Return response - include OTP in development for testing
+    const response = { 
       success: true, 
-      message: emailResult.warning || 'If an account exists with this email, an OTP has been sent',
+      message: emailResult.success 
+        ? 'If an account exists with this email, an OTP has been sent'
+        : (emailResult.warning || 'OTP generated. Check server logs if email not received.'),
       expiresIn: 120 // 2 minutes in seconds
-    });
+    };
+
+    // In development, include OTP in response for easy testing
+    if (process.env.NODE_ENV === 'development' && !emailResult.success) {
+      response.otp = otp;
+      response.debug = 'Email not sent. OTP included for testing.';
+    }
+
+    res.json(response);
   } catch (error) {
     console.error('Error in forgot-password send-otp:', error);
     res.status(500).json({ 

@@ -1,57 +1,29 @@
-import nodemailer from 'nodemailer';
+import axios from 'axios';
 import dotenv from 'dotenv';
 import { getSignupOtpTemplate, getForgotPasswordOtpTemplate } from '../utils/emailTemplates.js';
 
 dotenv.config();
 
-// Brevo SMTP configuration
-const brevoConfig = {
-  host: process.env.BREVO_SMTP_HOST || 'smtp-relay.brevo.com',
-  port: parseInt(process.env.BREVO_SMTP_PORT || '587'),
-  secure: false, // true for 465, false for other ports
-  auth: {
-    user: process.env.BREVO_SMTP_USER || process.env.BREVO_API_KEY?.split('-')[0] + '@smtp-brevo.com' || '9c4c2e001@smtp-brevo.com',
-    pass: process.env.BREVO_SMTP_PASS || process.env.BREVO_API_KEY || '4KAWYxSaz20Ls8Bd'
-  },
-  // Add connection timeout settings for Render
-  connectionTimeout: 10000, // 10 seconds
-  greetingTimeout: 10000,
-  socketTimeout: 10000,
-  // Retry configuration
-  pool: true,
-  maxConnections: 1,
-  maxMessages: 3
-};
+// Brevo API configuration
+// Using REST API instead of SMTP to avoid Render network restrictions
+const BREVO_API_KEY = process.env.BREVO_API_KEY || process.env.BREVO_SMTP_PASS;
 
-// Create reusable transporter
-const transporter = nodemailer.createTransport(brevoConfig);
+// Log configuration
+console.log('📧 Brevo API Configuration:');
+console.log('  API Key:', BREVO_API_KEY ? 'SET (' + BREVO_API_KEY.substring(0, 10) + '...' + BREVO_API_KEY.length + ' chars)' : 'NOT SET');
+console.log('  Using: REST API (HTTPS) - Works on Render!');
 
-// Verify transporter configuration (non-blocking, with timeout)
-// Don't block server startup if SMTP verification fails
-const verifyTransporter = () => {
-  transporter.verify(function (error, success) {
-    if (error) {
-      console.error('⚠️  Brevo SMTP configuration error:', error.message);
-      console.error('⚠️  Email functionality may not work. Check your Brevo credentials and network settings.');
-      // In production, don't crash - email will fail gracefully
-      if (process.env.NODE_ENV === 'production') {
-        console.log('ℹ️  Server will continue running. Email sending will be attempted but may fail.');
-      }
-    } else {
-      console.log('✅ Brevo SMTP server is ready to send emails');
-    }
-  });
-};
-
-// Only verify in development or if explicitly enabled
-// On Render, SMTP connections can timeout, so we skip verification on startup
-if (process.env.NODE_ENV !== 'production' || process.env.VERIFY_SMTP === 'true') {
-  // Use setTimeout to make it non-blocking
-  setTimeout(verifyTransporter, 1000);
+if (!BREVO_API_KEY) {
+  console.error('⚠️  WARNING: Brevo API key is not configured!');
+  console.error('   Please set BREVO_API_KEY in your environment variables.');
+  console.error('   Get your API key from: https://app.brevo.com/settings/keys/api');
+} else {
+  console.log('✅ Brevo API is configured and ready to send emails');
 }
 
 /**
- * Send OTP email using Brevo SMTP
+ * Send OTP email using Brevo REST API
+ * Uses HTTPS instead of SMTP - works on Render!
  * @param {string} toEmail - Recipient email address
  * @param {string} otp - 6-digit OTP code
  * @param {string} purpose - 'verification' for signup, 'password_reset' for forgot password
@@ -65,6 +37,13 @@ const sendOTPEmail = async (toEmail, otp, purpose = 'verification', name = 'ther
       throw new Error('Email and OTP are required');
     }
 
+    // Validate Brevo API key
+    if (!BREVO_API_KEY) {
+      const errorMsg = 'Brevo API key is not configured. Please set BREVO_API_KEY in your environment variables.';
+      console.error('❌', errorMsg);
+      throw new Error(errorMsg);
+    }
+
     // Determine email subject and template based on purpose
     const subject = purpose === 'password_reset' 
       ? 'Reset Your Password - Know How Cafe' 
@@ -75,57 +54,101 @@ const sendOTPEmail = async (toEmail, otp, purpose = 'verification', name = 'ther
       ? getForgotPasswordOtpTemplate(otp, name)
       : getSignupOtpTemplate(otp, name);
 
-    // Email options
-    const mailOptions = {
-      from: 'Know How Cafe <knowhowcafe2025@gmail.com>',
-      to: toEmail.toLowerCase().trim(),
+    // Email configuration
+    const fromEmail = process.env.BREVO_FROM_EMAIL || 'knowhowcafe2025@gmail.com';
+    const fromName = process.env.BREVO_FROM_NAME || 'Know How Cafe';
+
+    console.log(`📧 Attempting to send OTP email via Brevo API to: ${toEmail}`);
+    console.log(`   From: ${fromEmail}`);
+    console.log(`   Purpose: ${purpose}`);
+
+    // Brevo API endpoint
+    const brevoApiUrl = 'https://api.brevo.com/v3/smtp/email';
+
+    // Prepare email data for Brevo API
+    const emailData = {
+      sender: {
+        name: fromName,
+        email: fromEmail
+      },
+      to: [
+        {
+          email: toEmail.toLowerCase().trim(),
+          name: name || 'User'
+        }
+      ],
       subject: subject,
-      html: htmlContent
+      htmlContent: htmlContent,
+      textContent: `Your OTP code is: ${otp}. This code will expire in 10 minutes.`
     };
 
-    // Send email
-    const info = await transporter.sendMail(mailOptions);
+    // Send email via Brevo REST API
+    const response = await axios.post(brevoApiUrl, emailData, {
+      headers: {
+        'accept': 'application/json',
+        'api-key': BREVO_API_KEY,
+        'content-type': 'application/json'
+      },
+      timeout: 30000 // 30 second timeout
+    });
 
     console.log(`✅ OTP email sent successfully to ${toEmail}`);
-    console.log(`📧 Message ID: ${info.messageId}`);
+    console.log(`📧 Message ID: ${response.data.messageId || 'N/A'}`);
+    console.log(`📧 Response status: ${response.status}`);
 
     return {
       success: true,
-      messageId: info.messageId
+      messageId: response.data.messageId,
+      response: response.data
     };
 
   } catch (error) {
-    console.error('❌ Error sending OTP email:', error);
+    console.error('❌ Error sending OTP email via Brevo API:', error.message);
     
-    // In development, log OTP to console for testing
+    // Log detailed error information
+    if (error.response) {
+      // API responded with error
+      console.error('   Status:', error.response.status);
+      console.error('   Status Text:', error.response.statusText);
+      console.error('   Error Data:', JSON.stringify(error.response.data, null, 2));
+    } else if (error.request) {
+      // Request made but no response
+      console.error('   No response received from Brevo API');
+      console.error('   Request:', error.request);
+    } else {
+      // Error setting up request
+      console.error('   Error:', error.message);
+    }
+    
+    // Always log OTP to console for debugging (both dev and prod)
+    console.log(`\n📧 OTP for ${toEmail}: ${otp}\n`);
+    console.log(`   Purpose: ${purpose}`);
+    console.log(`   Time: ${new Date().toISOString()}\n`);
+    
+    // In development, return success with warning
     if (process.env.NODE_ENV === 'development') {
-      console.log(`\n📧 OTP for ${toEmail}: ${otp}\n`);
       return {
         success: true,
         warning: 'Email not sent, but OTP is available in console',
-        error: error.message
+        error: error.message,
+        otp: otp // Include OTP in response for development
       };
     }
 
-    // In production, if SMTP fails, log OTP to console as fallback
-    // This allows the app to continue working even if email service is down
-    if (process.env.NODE_ENV === 'production') {
-      console.error(`\n⚠️  Email sending failed for ${toEmail}`);
-      console.error(`📧 OTP (for manual verification): ${otp}`);
-      console.error(`Error: ${error.message}`);
-      
-      // Return a warning instead of throwing - allows app to continue
-      return {
-        success: false,
-        warning: 'Email service temporarily unavailable. OTP logged to server console.',
-        error: error.message
-      };
-    }
-
-    // In other cases, throw error
-    throw error;
+    // In production, log detailed error but don't crash
+    console.error(`\n⚠️  Email sending failed for ${toEmail}`);
+    console.error(`📧 OTP (for manual verification): ${otp}`);
+    
+    // Return error but don't throw - allows app to continue
+    return {
+      success: false,
+      warning: 'Email service temporarily unavailable. OTP logged to server console.',
+      error: error.message,
+      errorDetails: error.response?.data || error.message
+    };
   }
 };
 
-export { sendOTPEmail, transporter };
+// Export (no transporter needed for API)
+export { sendOTPEmail };
 

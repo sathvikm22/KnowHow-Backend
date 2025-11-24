@@ -83,10 +83,9 @@ CREATE INDEX idx_otp_expires ON otp(expires_at);
 
 - `SUPABASE_URL` - Your Supabase project URL
 - `SUPABASE_KEY` - Your Supabase anon key
-- `BREVO_SMTP_HOST` - Brevo SMTP host (default: smtp-relay.brevo.com)
-- `BREVO_SMTP_PORT` - Brevo SMTP port (default: 587)
-- `BREVO_SMTP_USER` - Brevo SMTP username
-- `BREVO_SMTP_PASS` - Brevo SMTP password
+- `BREVO_API_KEY` - Brevo API key (REQUIRED - get from https://app.brevo.com/settings/keys/api)
+- `BREVO_FROM_EMAIL` - Sender email (must be verified in Brevo, default: knowhowcafe2025@gmail.com)
+- `BREVO_FROM_NAME` - Sender name (default: Know How Cafe)
 - `GOOGLE_CLIENT_ID` - Google OAuth Client ID
 - `GOOGLE_CLIENT_SECRET` - Google OAuth Client Secret
 - `FRONTEND_URL` - Frontend URL (default: http://localhost:5173)
