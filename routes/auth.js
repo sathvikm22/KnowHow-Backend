@@ -29,14 +29,15 @@ router.post('/signup/send-otp', async (req, res) => {
     // Check if user already exists
     const { data: existingUser, error: userCheckError } = await supabase
       .from('users')
-      .select('id')
+      .select('id, email')
       .eq('email', email.toLowerCase())
       .maybeSingle(); // Use maybeSingle() to avoid error when no record found
 
     if (existingUser) {
+      console.log(`⚠️  Signup attempt with existing email: ${email}`);
       return res.status(400).json({ 
         success: false, 
-        message: 'User with this email already exists' 
+        message: 'This email address is already registered. Please use a different email or try logging in instead.' 
       });
     }
 
@@ -210,17 +211,18 @@ router.post('/signup/complete', async (req, res) => {
       });
     }
 
-    // Check if user already exists
+    // Check if user already exists (double-check before creating account)
     const { data: existingUser } = await supabase
       .from('users')
-      .select('id')
+      .select('id, email')
       .eq('email', email.toLowerCase())
       .maybeSingle(); // Use maybeSingle() to avoid error when no record found
 
     if (existingUser) {
+      console.log(`⚠️  Complete signup attempt with existing email: ${email}`);
       return res.status(400).json({ 
         success: false, 
-        message: 'User already exists' 
+        message: 'This email address is already registered. Please use a different email or try logging in instead.' 
       });
     }
 
