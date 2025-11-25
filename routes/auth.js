@@ -1048,5 +1048,434 @@ router.post('/cookie-consent', async (req, res) => {
   }
 });
 
+// ==================== CART ENDPOINTS ====================
+
+// Get user's cart
+router.get('/cart', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    // Verify token and get user email
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+
+    const userEmail = decoded.email;
+
+    // Get user ID
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', userEmail.toLowerCase())
+      .maybeSingle();
+
+    if (userError || !user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Get cart items
+    const { data: cartItems, error: cartError } = await supabase
+      .from('cart')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true });
+
+    if (cartError) {
+      console.error('Error fetching cart:', cartError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch cart'
+      });
+    }
+
+    res.json({
+      success: true,
+      cart: cartItems || []
+    });
+  } catch (error) {
+    console.error('Error getting cart:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Add item to cart
+router.post('/cart/add', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    const { kitName, price, quantity = 1 } = req.body;
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    if (!kitName || !price) {
+      return res.status(400).json({
+        success: false,
+        message: 'Kit name and price are required'
+      });
+    }
+
+    // Verify token and get user email
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+
+    const userEmail = decoded.email;
+
+    // Get user ID
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', userEmail.toLowerCase())
+      .maybeSingle();
+
+    if (userError || !user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if item already exists in cart
+    const { data: existingItem } = await supabase
+      .from('cart')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('kit_name', kitName)
+      .maybeSingle();
+
+    if (existingItem) {
+      // Update quantity
+      const { data: updatedItem, error: updateError } = await supabase
+        .from('cart')
+        .update({
+          quantity: existingItem.quantity + quantity,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existingItem.id)
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error('Error updating cart item:', updateError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to update cart item'
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Cart item updated',
+        cartItem: updatedItem
+      });
+    } else {
+      // Insert new item
+      const { data: newItem, error: insertError } = await supabase
+        .from('cart')
+        .insert({
+          user_id: user.id,
+          kit_name: kitName,
+          price: price,
+          quantity: quantity
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error('Error adding to cart:', insertError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to add item to cart'
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: 'Item added to cart',
+        cartItem: newItem
+      });
+    }
+  } catch (error) {
+    console.error('Error adding to cart:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Update cart item quantity
+router.put('/cart/update', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    const { kitName, quantity } = req.body;
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    if (!kitName || quantity === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Kit name and quantity are required'
+      });
+    }
+
+    if (quantity <= 0) {
+      // Remove item if quantity is 0 or less - call remove endpoint logic
+      const userEmail = decoded.email;
+      const { data: user } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', userEmail.toLowerCase())
+        .maybeSingle();
+
+      if (user) {
+        await supabase
+          .from('cart')
+          .delete()
+          .eq('user_id', user.id)
+          .eq('kit_name', kitName);
+      }
+      return res.json({
+        success: true,
+        message: 'Item removed from cart'
+      });
+    }
+
+    // Verify token and get user email
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+
+    const userEmail = decoded.email;
+
+    // Get user ID
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', userEmail.toLowerCase())
+      .maybeSingle();
+
+    if (userError || !user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Update cart item
+    const { data: updatedItem, error: updateError } = await supabase
+      .from('cart')
+      .update({
+        quantity: quantity,
+        updated_at: new Date().toISOString()
+      })
+      .eq('user_id', user.id)
+      .eq('kit_name', kitName)
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Error updating cart item:', updateError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update cart item'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Cart item updated',
+      cartItem: updatedItem
+    });
+  } catch (error) {
+    console.error('Error updating cart:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Remove item from cart
+router.delete('/cart/remove', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    const { kitName } = req.body;
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    if (!kitName) {
+      return res.status(400).json({
+        success: false,
+        message: 'Kit name is required'
+      });
+    }
+
+    // Verify token and get user email
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+
+    const userEmail = decoded.email;
+
+    // Get user ID
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', userEmail.toLowerCase())
+      .maybeSingle();
+
+    if (userError || !user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Delete cart item
+    const { error: deleteError } = await supabase
+      .from('cart')
+      .delete()
+      .eq('user_id', user.id)
+      .eq('kit_name', kitName);
+
+    if (deleteError) {
+      console.error('Error removing from cart:', deleteError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to remove item from cart'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Item removed from cart'
+    });
+  } catch (error) {
+    console.error('Error removing from cart:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Clear entire cart
+router.delete('/cart/clear', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    // Verify token and get user email
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+
+    const userEmail = decoded.email;
+
+    // Get user ID
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', userEmail.toLowerCase())
+      .maybeSingle();
+
+    if (userError || !user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Delete all cart items
+    const { error: deleteError } = await supabase
+      .from('cart')
+      .delete()
+      .eq('user_id', user.id);
+
+    if (deleteError) {
+      console.error('Error clearing cart:', deleteError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to clear cart'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Cart cleared'
+    });
+  } catch (error) {
+    console.error('Error clearing cart:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
 export default router;
 
