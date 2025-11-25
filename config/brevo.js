@@ -30,11 +30,22 @@ if (!BREVO_API_KEY) {
  * @param {string} name - User's name (optional, for personalization)
  * @returns {Promise<{success: boolean, message?: string, error?: Error}>}
  */
+// Email validation helper
+const isValidEmail = (email) => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+};
+
 const sendOTPEmail = async (toEmail, otp, purpose = 'verification', name = 'there') => {
   try {
     // Validate inputs
     if (!toEmail || !otp) {
       throw new Error('Email and OTP are required');
+    }
+
+    // Validate email format
+    if (!isValidEmail(toEmail)) {
+      throw new Error(`Invalid email format: ${toEmail}`);
     }
 
     // Validate Brevo API key
@@ -57,6 +68,18 @@ const sendOTPEmail = async (toEmail, otp, purpose = 'verification', name = 'ther
     // Email configuration
     const fromEmail = process.env.BREVO_FROM_EMAIL || 'knowhowcafe2025@gmail.com';
     const fromName = process.env.BREVO_FROM_NAME || 'Know How Cafe';
+
+    // Validate sender email
+    if (!isValidEmail(fromEmail)) {
+      throw new Error(`Invalid sender email format: ${fromEmail}. Please set BREVO_FROM_EMAIL to a valid email address.`);
+    }
+
+    // Check if sender email is verified in Brevo (common issue)
+    // Note: This is just a warning, Brevo will reject if not verified
+    if (fromEmail.includes('gmail.com') && !process.env.BREVO_FROM_EMAIL) {
+      console.warn('⚠️  Warning: Using Gmail address as sender. Make sure this email is verified in your Brevo account.');
+      console.warn('   Unverified sender emails may be rejected by Brevo.');
+    }
 
     console.log(`📧 Attempting to send OTP email via Brevo API to: ${toEmail}`);
     console.log(`   From: ${fromEmail}`);
@@ -82,15 +105,51 @@ const sendOTPEmail = async (toEmail, otp, purpose = 'verification', name = 'ther
       textContent: `Your OTP code is: ${otp}. This code will expire in 10 minutes.`
     };
 
-    // Send email via Brevo REST API
-    const response = await axios.post(brevoApiUrl, emailData, {
-      headers: {
-        'accept': 'application/json',
-        'api-key': BREVO_API_KEY,
-        'content-type': 'application/json'
-      },
-      timeout: 30000 // 30 second timeout
-    });
+    // Send email via Brevo REST API with retry mechanism
+    let lastError = null;
+    const maxRetries = 2;
+    let response = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`📧 Attempt ${attempt}/${maxRetries} to send email to ${toEmail}`);
+        
+        response = await axios.post(brevoApiUrl, emailData, {
+          headers: {
+            'accept': 'application/json',
+            'api-key': BREVO_API_KEY,
+            'content-type': 'application/json'
+          },
+          timeout: 30000 // 30 second timeout
+        });
+
+        // Success - break out of retry loop
+        break;
+      } catch (error) {
+        lastError = error;
+        
+        // Check if it's a rate limit error (429) or server error (5xx) - retry these
+        const shouldRetry = error.response && (
+          error.response.status === 429 || // Rate limit
+          error.response.status >= 500 || // Server error
+          error.response.status === 408 // Timeout
+        );
+
+        if (shouldRetry && attempt < maxRetries) {
+          const waitTime = attempt * 2000; // Exponential backoff: 2s, 4s
+          console.log(`⚠️  Retryable error on attempt ${attempt}. Waiting ${waitTime}ms before retry...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          continue;
+        } else {
+          // Non-retryable error or max retries reached
+          throw error;
+        }
+      }
+    }
+
+    if (!response) {
+      throw lastError || new Error('Failed to send email after retries');
+    }
 
     console.log(`✅ OTP email sent successfully to ${toEmail}`);
     console.log(`📧 Message ID: ${response.data.messageId || 'N/A'}`);
@@ -106,23 +165,51 @@ const sendOTPEmail = async (toEmail, otp, purpose = 'verification', name = 'ther
     console.error('❌ Error sending OTP email via Brevo API:', error.message);
     
     // Log detailed error information
+    let errorType = 'Unknown';
+    let errorMessage = error.message;
+    
     if (error.response) {
       // API responded with error
-      console.error('   Status:', error.response.status);
+      const status = error.response.status;
+      const errorData = error.response.data;
+      
+      console.error('   Status:', status);
       console.error('   Status Text:', error.response.statusText);
-      console.error('   Error Data:', JSON.stringify(error.response.data, null, 2));
+      console.error('   Error Data:', JSON.stringify(errorData, null, 2));
+      
+      // Categorize common Brevo errors
+      if (status === 429) {
+        errorType = 'Rate Limit';
+        errorMessage = 'Email service rate limit exceeded. Please try again in a few minutes.';
+      } else if (status === 400) {
+        errorType = 'Invalid Request';
+        errorMessage = errorData?.message || 'Invalid email request. Check sender email configuration.';
+      } else if (status === 401 || status === 403) {
+        errorType = 'Authentication';
+        errorMessage = 'Email service authentication failed. Check API key configuration.';
+      } else if (status >= 500) {
+        errorType = 'Server Error';
+        errorMessage = 'Email service temporarily unavailable. Please try again later.';
+      } else {
+        errorType = 'API Error';
+        errorMessage = errorData?.message || `Email service error (${status})`;
+      }
     } else if (error.request) {
       // Request made but no response
+      errorType = 'Network Error';
+      errorMessage = 'No response received from email service. Check network connection.';
       console.error('   No response received from Brevo API');
-      console.error('   Request:', error.request);
+      console.error('   Request timeout or network issue');
     } else {
       // Error setting up request
+      errorType = 'Request Error';
       console.error('   Error:', error.message);
     }
     
     // Always log OTP to console for debugging (both dev and prod)
     console.log(`\n📧 OTP for ${toEmail}: ${otp}\n`);
     console.log(`   Purpose: ${purpose}`);
+    console.log(`   Error Type: ${errorType}`);
     console.log(`   Time: ${new Date().toISOString()}\n`);
     
     // In development, return success with warning
@@ -130,7 +217,8 @@ const sendOTPEmail = async (toEmail, otp, purpose = 'verification', name = 'ther
       return {
         success: true,
         warning: 'Email not sent, but OTP is available in console',
-        error: error.message,
+        error: errorMessage,
+        errorType: errorType,
         otp: otp // Include OTP in response for development
       };
     }
@@ -138,12 +226,14 @@ const sendOTPEmail = async (toEmail, otp, purpose = 'verification', name = 'ther
     // In production, log detailed error but don't crash
     console.error(`\n⚠️  Email sending failed for ${toEmail}`);
     console.error(`📧 OTP (for manual verification): ${otp}`);
+    console.error(`📧 Error Type: ${errorType}`);
     
     // Return error but don't throw - allows app to continue
     return {
       success: false,
       warning: 'Email service temporarily unavailable. OTP logged to server console.',
-      error: error.message,
+      error: errorMessage,
+      errorType: errorType,
       errorDetails: error.response?.data || error.message
     };
   }

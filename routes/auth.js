@@ -58,7 +58,7 @@ router.post('/signup/send-otp', async (req, res) => {
         email: email.toLowerCase(),
         otp_code: otp,
         purpose: 'signup',
-        expires_at: new Date(Date.now() + 2 * 60 * 1000).toISOString() // 2 minutes from now
+        expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 minutes from now
       });
 
     if (otpError) {
@@ -75,30 +75,42 @@ router.post('/signup/send-otp', async (req, res) => {
     // Log result
     if (emailResult.success) {
       console.log(`✅ Email sent successfully to ${email}`);
+      console.log(`📧 Message ID: ${emailResult.messageId || 'N/A'}`);
     } else {
       console.error(`❌ Email failed for ${email}:`, emailResult.error);
+      console.error(`📧 Error Type: ${emailResult.errorType || 'Unknown'}`);
+      // Always log OTP to console for manual verification
+      console.log(`📧 OTP for ${email} (manual verification): ${otp}`);
+    }
+
+    // Return appropriate response based on email success
+    if (emailResult.success) {
+      // Email sent successfully
+      res.json({ 
+        success: true, 
+        message: 'OTP sent to your email',
+        expiresIn: 600 // 10 minutes in seconds
+      });
+    } else {
+      // Email failed - still return success but with warning
+      // OTP is stored in DB, so user can still verify if they check server logs
+      const response = {
+        success: true, // Still true because OTP is generated and stored
+        message: emailResult.warning || 'OTP generated but email delivery failed. Please check server logs or contact support.',
+        expiresIn: 600,
+        emailSent: false,
+        errorType: emailResult.errorType || 'Unknown'
+      };
+
       // In development, include OTP in response for testing
-      if (process.env.NODE_ENV === 'development' && emailResult.otp) {
-        console.log(`📧 OTP for ${email}: ${otp}`);
+      if (process.env.NODE_ENV === 'development') {
+        response.otp = otp;
+        response.debug = 'Email not sent. OTP included for testing.';
+        response.error = emailResult.error;
       }
+
+      res.json(response);
     }
-
-    // Return response - include OTP in development for testing
-    const response = { 
-      success: true, 
-      message: emailResult.success 
-        ? 'OTP sent to your email' 
-        : (emailResult.warning || 'OTP generated. Check server logs if email not received.'),
-      expiresIn: 120 // 2 minutes in seconds
-    };
-
-    // In development, include OTP in response for easy testing
-    if (process.env.NODE_ENV === 'development' && !emailResult.success) {
-      response.otp = otp;
-      response.debug = 'Email not sent. OTP included for testing.';
-    }
-
-    res.json(response);
   } catch (error) {
     console.error('Error in send-otp:', error);
     res.status(500).json({ 
@@ -396,7 +408,7 @@ router.post('/forgot-password/send-otp', async (req, res) => {
         email: email.toLowerCase(),
         otp_code: otp,
         purpose: 'password_reset',
-        expires_at: new Date(Date.now() + 2 * 60 * 1000).toISOString() // 2 minutes from now
+        expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 minutes from now
       });
 
     if (otpError) {
@@ -413,30 +425,42 @@ router.post('/forgot-password/send-otp', async (req, res) => {
     // Log result
     if (emailResult.success) {
       console.log(`✅ Password reset email sent successfully to ${email}`);
+      console.log(`📧 Message ID: ${emailResult.messageId || 'N/A'}`);
     } else {
       console.error(`❌ Password reset email failed for ${email}:`, emailResult.error);
+      console.error(`📧 Error Type: ${emailResult.errorType || 'Unknown'}`);
+      // Always log OTP to console for manual verification
+      console.log(`📧 Password Reset OTP for ${email} (manual verification): ${otp}`);
+    }
+
+    // Return appropriate response based on email success
+    if (emailResult.success) {
+      // Email sent successfully
+      res.json({ 
+        success: true, 
+        message: 'If an account exists with this email, an OTP has been sent',
+        expiresIn: 600 // 10 minutes in seconds
+      });
+    } else {
+      // Email failed - still return success but with warning
+      // OTP is stored in DB, so user can still verify if they check server logs
+      const response = {
+        success: true, // Still true because OTP is generated and stored
+        message: emailResult.warning || 'OTP generated but email delivery failed. Please check server logs or contact support.',
+        expiresIn: 600,
+        emailSent: false,
+        errorType: emailResult.errorType || 'Unknown'
+      };
+
       // In development, include OTP in response for testing
-      if (process.env.NODE_ENV === 'development' && emailResult.otp) {
-        console.log(`📧 Password Reset OTP for ${email}: ${otp}`);
+      if (process.env.NODE_ENV === 'development') {
+        response.otp = otp;
+        response.debug = 'Email not sent. OTP included for testing.';
+        response.error = emailResult.error;
       }
+
+      res.json(response);
     }
-
-    // Return response - include OTP in development for testing
-    const response = { 
-      success: true, 
-      message: emailResult.success 
-        ? 'If an account exists with this email, an OTP has been sent'
-        : (emailResult.warning || 'OTP generated. Check server logs if email not received.'),
-      expiresIn: 120 // 2 minutes in seconds
-    };
-
-    // In development, include OTP in response for easy testing
-    if (process.env.NODE_ENV === 'development' && !emailResult.success) {
-      response.otp = otp;
-      response.debug = 'Email not sent. OTP included for testing.';
-    }
-
-    res.json(response);
   } catch (error) {
     console.error('Error in forgot-password send-otp:', error);
     res.status(500).json({ 
@@ -903,6 +927,124 @@ router.get('/google/callback', async (req, res) => {
   } catch (error) {
     console.error('Google OAuth callback error:', error);
     res.redirect(`${FRONTEND_URL}/login?error=oauth_callback_failed`);
+  }
+});
+
+// Get user's cookie consent status
+router.get('/cookie-consent', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    // Verify token and get user email
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+
+    const userEmail = decoded.email;
+
+    // Get user's cookie consent status
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('cookie_consent')
+      .eq('email', userEmail.toLowerCase())
+      .maybeSingle();
+
+    if (userError || !user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      cookieConsent: user.cookie_consent || null // null, 'accepted', or 'declined'
+    });
+  } catch (error) {
+    console.error('Error getting cookie consent:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Update user's cookie consent status
+router.post('/cookie-consent', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    const { consent } = req.body; // 'accepted' or 'declined'
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    if (!consent || !['accepted', 'declined'].includes(consent)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid consent value. Must be "accepted" or "declined"'
+      });
+    }
+
+    // Verify token and get user email
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtError) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+
+    const userEmail = decoded.email;
+
+    // Update user's cookie consent status
+    const { data: updatedUser, error: updateError } = await supabase
+      .from('users')
+      .update({
+        cookie_consent: consent,
+        cookie_consent_date: new Date().toISOString()
+      })
+      .eq('email', userEmail.toLowerCase())
+      .select()
+      .single();
+
+    if (updateError) {
+      console.error('Error updating cookie consent:', updateError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update cookie consent'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Cookie consent ${consent} successfully`,
+      cookieConsent: consent
+    });
+  } catch (error) {
+    console.error('Error updating cookie consent:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
   }
 });
 
