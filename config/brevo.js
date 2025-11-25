@@ -212,23 +212,23 @@ const sendOTPEmail = async (toEmail, otp, purpose = 'verification', name = 'ther
     console.log(`   Error Type: ${errorType}`);
     console.log(`   Time: ${new Date().toISOString()}\n`);
     
-    // In development, return success with warning
+    // In development, expose OTP for manual verification but still flag failure
     if (process.env.NODE_ENV === 'development') {
+      console.warn('⚠️  Email delivery failed in development mode. OTP logged in console for manual testing.');
       return {
-        success: true,
-        warning: 'Email not sent, but OTP is available in console',
+        success: false,
+        warning: 'Email not sent (dev mode). OTP available in server logs.',
         error: errorMessage,
         errorType: errorType,
-        otp: otp // Include OTP in response for development
+        otp: otp // Only used during local testing to unblock flows
       };
     }
 
-    // In production, log detailed error but don't crash
+    // In production, log detailed error but ensure caller knows it failed
     console.error(`\n⚠️  Email sending failed for ${toEmail}`);
     console.error(`📧 OTP (for manual verification): ${otp}`);
     console.error(`📧 Error Type: ${errorType}`);
     
-    // Return error but don't throw - allows app to continue
     return {
       success: false,
       warning: 'Email service temporarily unavailable. OTP logged to server console.',
