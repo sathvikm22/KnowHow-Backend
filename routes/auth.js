@@ -711,14 +711,38 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 // Remove trailing slashes to avoid issues
 const removeTrailingSlash = (url) => url ? url.replace(/\/+$/, '') : url;
 
+// Allowed frontend domains for production
+const ALLOWED_FRONTEND_DOMAINS = [
+  'https://know-how-frontend-rosy.vercel.app',
+  'https://www.knowhowindia.in',
+  'https://knowhowindia.in'
+];
+
 // For Render backend: https://knowhow-backend-d2gs.onrender.com
 // For Vercel frontend: https://know-how-frontend.vercel.app, https://know-how-frontend-rosy.vercel.app, https://www.knowhowindia.in, https://knowhowindia.in
-const FRONTEND_URL = removeTrailingSlash(
-  process.env.FRONTEND_URL || 
-  (process.env.NODE_ENV === 'production' 
-    ? 'https://knowhowindia.in' 
-    : 'http://localhost:8080')
-); // Frontend runs on port 8080 (see vite.config.ts)
+const getFrontendUrl = (reqOrigin = null) => {
+  // If FRONTEND_URL is explicitly set, use it
+  if (process.env.FRONTEND_URL) {
+    return removeTrailingSlash(process.env.FRONTEND_URL);
+  }
+  
+  // In production, try to use request origin if it's in allowed domains
+  if (process.env.NODE_ENV === 'production' && reqOrigin) {
+    const origin = removeTrailingSlash(reqOrigin);
+    if (ALLOWED_FRONTEND_DOMAINS.includes(origin)) {
+      return origin;
+    }
+  }
+  
+  // Default fallback
+  return removeTrailingSlash(
+    process.env.NODE_ENV === 'production' 
+      ? 'https://knowhowindia.in' 
+      : 'http://localhost:8080'
+  );
+};
+
+const FRONTEND_URL_DEFAULT = getFrontendUrl();
 
 const BACKEND_URL = removeTrailingSlash(
   process.env.BACKEND_URL || 
@@ -743,10 +767,19 @@ router.get('/google', (req, res) => {
   }
 
   const redirectUri = `${BACKEND_URL}/api/auth/google/callback`;
+  
+  // Get frontend URL from request origin or default
+  const requestOrigin = req.get('origin') || req.get('referer');
+  const frontendUrl = requestOrigin ? getFrontendUrl(requestOrigin) : FRONTEND_URL_DEFAULT;
+  
+  // Store frontend URL in state parameter for callback
+  const state = Buffer.from(JSON.stringify({ frontendUrl })).toString('base64');
+  
   console.log('✅ Google OAuth Initiated:', {
     redirectUri,
     backendUrl: BACKEND_URL,
-    frontendUrl: FRONTEND_URL,
+    frontendUrl: frontendUrl,
+    requestOrigin: requestOrigin,
     clientId: GOOGLE_CLIENT_ID ? GOOGLE_CLIENT_ID.substring(0, 20) + '...' : 'NOT SET'
   });
 
@@ -761,7 +794,8 @@ router.get('/google', (req, res) => {
     `response_type=${responseType}&` +
     `scope=${encodeURIComponent(scope)}&` +
     `access_type=${accessType}&` +
-    `prompt=${prompt}`;
+    `prompt=${prompt}&` +
+    `state=${encodeURIComponent(state)}`;
 
   res.redirect(authUrl);
 });
@@ -769,29 +803,58 @@ router.get('/google', (req, res) => {
 // Google OAuth - Callback (handles Google redirect)
 router.get('/google/callback', async (req, res) => {
   try {
-    const { code, error } = req.query;
+    const { code, error, state } = req.query;
+
+    // Try to get frontend URL from state parameter or referer header
+    let frontendUrl = FRONTEND_URL_DEFAULT;
+    if (state) {
+      try {
+        const stateData = JSON.parse(Buffer.from(state, 'base64').toString());
+        if (stateData.frontendUrl && ALLOWED_FRONTEND_DOMAINS.includes(stateData.frontendUrl)) {
+          frontendUrl = stateData.frontendUrl;
+        }
+      } catch (e) {
+        // Ignore state parsing errors
+      }
+    }
+    
+    // Also check referer header as fallback
+    const referer = req.get('referer');
+    if (referer) {
+      try {
+        const refererOrigin = new URL(referer).origin;
+        if (ALLOWED_FRONTEND_DOMAINS.includes(refererOrigin)) {
+          frontendUrl = refererOrigin;
+        }
+      } catch (e) {
+        // Ignore referer parsing errors
+      }
+    }
 
     console.log('Google OAuth Callback received:', {
       hasCode: !!code,
       hasError: !!error,
       error,
       backendUrl: BACKEND_URL,
-      frontendUrl: FRONTEND_URL
+      frontendUrl: frontendUrl,
+      defaultFrontendUrl: FRONTEND_URL_DEFAULT,
+      referer: req.get('referer'),
+      state: state ? 'present' : 'missing'
     });
 
     if (error) {
       console.error('Google OAuth error:', error);
-      return res.redirect(`${FRONTEND_URL}/login?error=oauth_failed`);
+      return res.redirect(`${frontendUrl}/login?error=oauth_failed`);
     }
 
     if (!code) {
       console.error('Google OAuth: No authorization code received');
-      return res.redirect(`${FRONTEND_URL}/login?error=no_code`);
+      return res.redirect(`${frontendUrl}/login?error=no_code`);
     }
 
     if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
       console.error('Google OAuth: Missing credentials in environment variables');
-      return res.redirect(`${FRONTEND_URL}/login?error=oauth_not_configured`);
+      return res.redirect(`${frontendUrl}/login?error=oauth_not_configured`);
     }
 
     // Exchange authorization code for tokens
@@ -813,7 +876,7 @@ router.get('/google/callback', async (req, res) => {
     const { access_token, id_token } = tokenResponse.data;
 
     if (!access_token || !id_token) {
-      return res.redirect(`${FRONTEND_URL}/login?error=token_exchange_failed`);
+      return res.redirect(`${frontendUrl}/login?error=token_exchange_failed`);
     }
 
     // Get user info from Google
@@ -827,7 +890,7 @@ router.get('/google/callback', async (req, res) => {
     const { email, name, picture } = googleUser;
 
     if (!email) {
-      return res.redirect(`${FRONTEND_URL}/login?error=no_email`);
+      return res.redirect(`${frontendUrl}/login?error=no_email`);
     }
 
     // Check if user exists in database
@@ -877,7 +940,7 @@ router.get('/google/callback', async (req, res) => {
 
       if (createError) {
         console.error('Error creating user:', createError);
-        return res.redirect(`${FRONTEND_URL}/login?error=user_creation_failed`);
+        return res.redirect(`${frontendUrl}/login?error=user_creation_failed`);
       }
 
       user = newUser;
@@ -902,7 +965,7 @@ router.get('/google/callback', async (req, res) => {
     // Redirect to frontend with token
     // Use HTTP 302 redirect (standard for OAuth callbacks)
     try {
-      const redirectUrl = new URL(`${FRONTEND_URL}/auth/google/callback`);
+      const redirectUrl = new URL(`${frontendUrl}/auth/google/callback`);
       redirectUrl.searchParams.set('token', token);
       redirectUrl.searchParams.set('email', user.email);
       redirectUrl.searchParams.set('name', user.name || 'User');
@@ -917,7 +980,8 @@ router.get('/google/callback', async (req, res) => {
       console.log('=== Google OAuth Success ===');
       console.log('User authenticated:', user.email);
       console.log('Redirecting to frontend:', finalUrl);
-      console.log('Frontend URL:', FRONTEND_URL);
+      console.log('Frontend URL used:', frontendUrl);
+      console.log('Default Frontend URL:', FRONTEND_URL_DEFAULT);
       console.log('Token length:', token.length);
       console.log('===========================');
 
@@ -926,15 +990,17 @@ router.get('/google/callback', async (req, res) => {
       res.redirect(302, finalUrl);
     } catch (urlError) {
       console.error('Error constructing redirect URL:', urlError);
+      console.error('Frontend URL that failed:', frontendUrl);
       // Fallback: redirect with query string manually
-      const fallbackUrl = `${FRONTEND_URL}/auth/google/callback?token=${encodeURIComponent(token)}&email=${encodeURIComponent(user.email)}&name=${encodeURIComponent(user.name || 'User')}${isAdmin ? '&isAdmin=true' : ''}${isNewUser ? '&newUser=true' : ''}`;
+      const fallbackUrl = `${frontendUrl}/auth/google/callback?token=${encodeURIComponent(token)}&email=${encodeURIComponent(user.email)}&name=${encodeURIComponent(user.name || 'User')}${isAdmin ? '&isAdmin=true' : ''}${isNewUser ? '&newUser=true' : ''}`;
       console.log('Using fallback redirect URL:', fallbackUrl);
       res.redirect(302, fallbackUrl);
     }
 
   } catch (error) {
     console.error('Google OAuth callback error:', error);
-    res.redirect(`${FRONTEND_URL}/login?error=oauth_callback_failed`);
+    // Use default frontend URL for error redirects
+    res.redirect(`${FRONTEND_URL_DEFAULT}/login?error=oauth_callback_failed`);
   }
 });
 
