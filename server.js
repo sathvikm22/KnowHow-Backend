@@ -27,7 +27,10 @@ const corsOptions = {
       
       // Production - Vercel frontend
       'https://know-how-frontend.vercel.app',
-      'https://www.know-how-frontend.vercel.app'
+      'https://www.know-how-frontend.vercel.app',
+      'https://know-how-frontend-rosy.vercel.app',
+      'https://www.knowhowindia.in',
+      'https://knowhowindia.in'
     ];
 
     if (allowedOrigins.includes(origin)) {

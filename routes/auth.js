@@ -709,7 +709,7 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
 // Get URLs from environment variables with production defaults
 // For Render backend: https://knowhow-backend.onrender.com
-// For Vercel frontend: https://know-how-frontend.vercel.app
+// For Vercel frontend: https://know-how-frontend.vercel.app, https://know-how-frontend-rosy.vercel.app, https://www.knowhowindia.in, https://knowhowindia.in
 const FRONTEND_URL = process.env.FRONTEND_URL || 
   (process.env.NODE_ENV === 'production' 
     ? 'https://know-how-frontend.vercel.app' 
