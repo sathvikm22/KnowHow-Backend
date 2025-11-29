@@ -713,7 +713,10 @@ const removeTrailingSlash = (url) => url ? url.replace(/\/+$/, '') : url;
 
 // Allowed frontend domains for production
 const ALLOWED_FRONTEND_DOMAINS = [
+  'https://know-how-frontend.vercel.app',
+  'https://www.know-how-frontend.vercel.app',
   'https://know-how-frontend-rosy.vercel.app',
+  'https://www.know-how-frontend-rosy.vercel.app',
   'https://www.knowhowindia.in',
   'https://knowhowindia.in'
 ];
