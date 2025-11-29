@@ -56,11 +56,7 @@ app.set('trust proxy', true);
 
 // Health check (Render uses this automatically)
 app.get('/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Server is running',
-    timestamp: new Date().toISOString()
-  });
+  res.status(200).send('OK');
 });
 
 // API routes
