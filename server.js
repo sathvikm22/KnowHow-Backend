@@ -54,9 +54,33 @@ app.use(express.urlencoded({ extended: true }));
 // Trust proxy (important for Render)
 app.set('trust proxy', true);
 
+// Root route - for Render health checks and general info
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Know How Cafe API Server',
+    version: '1.0.0',
+    status: 'running',
+    endpoints: {
+      health: '/health',
+      api: '/api/auth'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Health check (Render uses this automatically)
 app.get('/health', (req, res) => {
   res.status(200).send('OK');
+});
+
+// Handle HEAD requests for health checks (some services use HEAD)
+app.head('/health', (req, res) => {
+  res.status(200).end();
+});
+
+app.head('/', (req, res) => {
+  res.status(200).end();
 });
 
 // API routes
