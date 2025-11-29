@@ -708,7 +708,7 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
 // Get URLs from environment variables with production defaults
-// For Render backend: https://knowhow-backend.onrender.com
+// For Render backend: https://knowhow-backend-d2gs.onrender.com
 // For Vercel frontend: https://know-how-frontend.vercel.app, https://know-how-frontend-rosy.vercel.app, https://www.knowhowindia.in, https://knowhowindia.in
 const FRONTEND_URL = process.env.FRONTEND_URL || 
   (process.env.NODE_ENV === 'production' 
@@ -716,7 +716,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL ||
     : 'http://localhost:8080'); // Frontend runs on port 8080 (see vite.config.ts)
 const BACKEND_URL = process.env.BACKEND_URL || 
   (process.env.NODE_ENV === 'production' 
-    ? 'https://knowhow-backend.onrender.com' 
+    ? 'https://knowhow-backend-d2gs.onrender.com' 
     : 'http://localhost:3000');
 
 // Google OAuth - Initiate (redirects to Google)
