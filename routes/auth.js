@@ -684,6 +684,79 @@ router.get('/me', async (req, res) => {
   }
 });
 
+// Get all users (admin only)
+router.get('/all-users', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Authentication required' 
+      });
+    }
+
+    const token = authHeader.split(' ')[1];
+    
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      
+      // Get user to check if admin
+      const { data: user, error: userError } = await supabase
+        .from('users')
+        .select('email')
+        .eq('id', decoded.userId)
+        .maybeSingle();
+
+      if (userError || !user) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'User not found' 
+        });
+      }
+
+      // Check if admin (knowhowcafe2025@gmail.com)
+      const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
+      if (!isAdmin) {
+        return res.status(403).json({ 
+          success: false, 
+          message: 'Admin access required' 
+        });
+      }
+
+      // Get all users
+      const { data: users, error: usersError } = await supabase
+        .from('users')
+        .select('id, email, name, created_at')
+        .order('created_at', { ascending: false });
+
+      if (usersError) {
+        console.error('Error fetching users:', usersError);
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Failed to fetch users' 
+        });
+      }
+
+      res.json({ 
+        success: true, 
+        users: users || []
+      });
+    } catch (jwtError) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid token' 
+      });
+    }
+  } catch (error) {
+    console.error('Error in /all-users:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Internal server error' 
+    });
+  }
+});
+
 // Logout (client-side token removal, but endpoint for consistency)
 router.post('/logout', async (req, res) => {
   try {

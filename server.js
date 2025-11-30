@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/auth.js';
+import paymentRoutes from './routes/payments.js';
+import orderRoutes from './routes/orders.js';
 
 dotenv.config();
 
@@ -85,6 +87,8 @@ app.head('/', (req, res) => {
 
 // API routes
 app.use('/api/auth', authRoutes);
+app.use('/api', paymentRoutes);
+app.use('/api', orderRoutes);
 
 // Log available routes on startup
 console.log('📋 Registered API routes:');
@@ -92,6 +96,14 @@ console.log('   GET  /api/auth/google - Google OAuth initiation');
 console.log('   GET  /api/auth/google/callback - Google OAuth callback');
 console.log('   POST /api/auth/signup/send-otp - Send signup OTP');
 console.log('   POST /api/auth/login - User login');
+console.log('   POST /api/create-order - Create Razorpay order');
+console.log('   POST /api/verify-payment - Verify payment');
+console.log('   GET  /api/check-payment-status/:order_id - Check payment status');
+console.log('   POST /api/webhook - Razorpay webhook handler');
+console.log('   POST /api/cancel-booking/:booking_id - Cancel booking and refund');
+console.log('   POST /api/update-booking/:booking_id - Update booking');
+console.log('   GET  /api/my-bookings - Get user bookings');
+console.log('   GET  /api/available-slots - Get available slots');
 
 // Error handler
 app.use((err, req, res, next) => {
