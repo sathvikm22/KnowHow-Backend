@@ -832,7 +832,8 @@ router.get('/google', (req, res) => {
   console.log('🔵 Google OAuth route hit - /api/auth/google');
   console.log('   Request URL:', req.url);
   console.log('   Request method:', req.method);
-  console.log('   Headers:', req.headers);
+  console.log('   Origin:', req.get('origin'));
+  console.log('   Referer:', req.get('referer'));
   
   if (!GOOGLE_CLIENT_ID) {
     console.error('❌ Google OAuth Error: GOOGLE_CLIENT_ID is not set in environment variables');
@@ -842,7 +843,26 @@ router.get('/google', (req, res) => {
     });
   }
 
+  if (!GOOGLE_CLIENT_SECRET) {
+    console.error('❌ Google OAuth Error: GOOGLE_CLIENT_SECRET is not set in environment variables');
+    return res.status(500).json({
+      success: false,
+      message: 'Google OAuth is not fully configured. Please check your environment variables.'
+    });
+  }
+
   const redirectUri = `${BACKEND_URL}/api/auth/google/callback`;
+  
+  // Validate BACKEND_URL is set correctly
+  if (!BACKEND_URL || BACKEND_URL.includes('localhost') && process.env.NODE_ENV === 'production') {
+    console.error('❌ Google OAuth Error: BACKEND_URL is not set correctly for production');
+    console.error('   Current BACKEND_URL:', BACKEND_URL);
+    console.error('   NODE_ENV:', process.env.NODE_ENV);
+    return res.status(500).json({
+      success: false,
+      message: 'Backend URL is not configured correctly. Please set BACKEND_URL environment variable.'
+    });
+  }
   
   // Get frontend URL from request origin or default
   const requestOrigin = req.get('origin') || req.get('referer');
@@ -856,7 +876,9 @@ router.get('/google', (req, res) => {
     backendUrl: BACKEND_URL,
     frontendUrl: frontendUrl,
     requestOrigin: requestOrigin,
-    clientId: GOOGLE_CLIENT_ID ? GOOGLE_CLIENT_ID.substring(0, 20) + '...' : 'NOT SET'
+    clientId: GOOGLE_CLIENT_ID ? GOOGLE_CLIENT_ID.substring(0, 20) + '...' : 'NOT SET',
+    redirectUriForGoogle: redirectUri,
+    note: 'Make sure this redirectUri is added to Google Cloud Console Authorized redirect URIs'
   });
 
   const scope = 'openid email profile';
@@ -907,7 +929,7 @@ router.get('/google/callback', async (req, res) => {
       }
     }
 
-    console.log('Google OAuth Callback received:', {
+    console.log('🔵 Google OAuth Callback received:', {
       hasCode: !!code,
       hasError: !!error,
       error,
@@ -915,16 +937,38 @@ router.get('/google/callback', async (req, res) => {
       frontendUrl: frontendUrl,
       defaultFrontendUrl: FRONTEND_URL_DEFAULT,
       referer: req.get('referer'),
-      state: state ? 'present' : 'missing'
+      origin: req.get('origin'),
+      state: state ? 'present' : 'missing',
+      fullUrl: req.protocol + '://' + req.get('host') + req.originalUrl,
+      redirectUriUsed: `${BACKEND_URL}/api/auth/google/callback`
     });
+    
+    // Log warning if redirect URI might be mismatched
+    const expectedRedirectUri = `${BACKEND_URL}/api/auth/google/callback`;
+    console.log('⚠️  IMPORTANT: Make sure this redirect URI is in Google Cloud Console:');
+    console.log('   ', expectedRedirectUri);
 
     if (error) {
-      console.error('Google OAuth error:', error);
-      return res.redirect(`${frontendUrl}/login?error=oauth_failed`);
+      console.error('❌ Google OAuth error received:', error);
+      
+      // Provide specific error messages for common issues
+      let errorMessage = 'oauth_failed';
+      if (error === 'access_denied') {
+        errorMessage = 'access_denied';
+      } else if (error === 'redirect_uri_mismatch') {
+        errorMessage = 'redirect_uri_mismatch';
+        console.error('⚠️  CRITICAL: Redirect URI mismatch!');
+        console.error('   Expected redirect URI:', `${BACKEND_URL}/api/auth/google/callback`);
+        console.error('   Make sure this exact URL is in Google Cloud Console → Credentials → Authorized redirect URIs');
+      }
+      
+      return res.redirect(`${frontendUrl}/login?error=${errorMessage}`);
     }
 
     if (!code) {
-      console.error('Google OAuth: No authorization code received');
+      console.error('❌ Google OAuth: No authorization code received');
+      console.error('   This usually means Google did not redirect properly');
+      console.error('   Check that the redirect URI in Google Cloud Console matches:', `${BACKEND_URL}/api/auth/google/callback`);
       return res.redirect(`${frontendUrl}/login?error=no_code`);
     }
 
@@ -935,19 +979,33 @@ router.get('/google/callback', async (req, res) => {
 
     // Exchange authorization code for tokens
     const redirectUri = `${BACKEND_URL}/api/auth/google/callback`;
-    console.log('Exchanging code for tokens with redirect_uri:', redirectUri);
+    console.log('🔄 Exchanging code for tokens with redirect_uri:', redirectUri);
     
-    const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
-      client_id: GOOGLE_CLIENT_ID,
-      client_secret: GOOGLE_CLIENT_SECRET,
-      code: code,
-      grant_type: 'authorization_code',
-      redirect_uri: redirectUri
-    }, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
+    let tokenResponse;
+    try {
+      tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        code: code,
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri
+      }, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      });
+    } catch (tokenError) {
+      console.error('❌ Token exchange failed:', tokenError.response?.data || tokenError.message);
+      if (tokenError.response?.data?.error === 'invalid_grant') {
+        console.error('   This usually means the authorization code has expired or was already used');
+        return res.redirect(`${frontendUrl}/login?error=code_expired`);
+      } else if (tokenError.response?.data?.error === 'redirect_uri_mismatch') {
+        console.error('   ⚠️  Redirect URI mismatch in token exchange!');
+        console.error('   Make sure this exact URL is in Google Cloud Console:', redirectUri);
+        return res.redirect(`${frontendUrl}/login?error=redirect_uri_mismatch`);
       }
-    });
+      return res.redirect(`${frontendUrl}/login?error=token_exchange_failed`);
+    }
 
     const { access_token, id_token } = tokenResponse.data;
 
