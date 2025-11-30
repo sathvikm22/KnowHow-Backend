@@ -829,112 +829,122 @@ const BACKEND_URL = removeTrailingSlash(
 
 // Google OAuth - Initiate (redirects to Google)
 router.get('/google', (req, res) => {
-  console.log('🔵 Google OAuth route hit - /api/auth/google');
-  console.log('   Request URL:', req.url);
-  console.log('   Request method:', req.method);
-  console.log('   Origin:', req.get('origin'));
-  console.log('   Referer:', req.get('referer'));
-  console.log('   Query params:', req.query);
-  
-  if (!GOOGLE_CLIENT_ID) {
-    console.error('❌ Google OAuth Error: GOOGLE_CLIENT_ID is not set in environment variables');
-    return res.status(500).json({
-      success: false,
-      message: 'Google OAuth is not configured. Please check your environment variables.'
-    });
-  }
-
-  if (!GOOGLE_CLIENT_SECRET) {
-    console.error('❌ Google OAuth Error: GOOGLE_CLIENT_SECRET is not set in environment variables');
-    return res.status(500).json({
-      success: false,
-      message: 'Google OAuth is not fully configured. Please check your environment variables.'
-    });
-  }
-
-  const redirectUri = `${BACKEND_URL}/api/auth/google/callback`;
-  
-  // Validate BACKEND_URL is set correctly
-  if (!BACKEND_URL || BACKEND_URL.includes('localhost') && process.env.NODE_ENV === 'production') {
-    console.error('❌ Google OAuth Error: BACKEND_URL is not set correctly for production');
-    console.error('   Current BACKEND_URL:', BACKEND_URL);
-    console.error('   NODE_ENV:', process.env.NODE_ENV);
-    return res.status(500).json({
-      success: false,
-      message: 'Backend URL is not configured correctly. Please set BACKEND_URL environment variable.'
-    });
-  }
-  
-  // Get frontend URL - priority: query param > origin/referer > env var > default
-  let frontendUrl = FRONTEND_URL_DEFAULT;
-  
-  // First, try query parameter (most reliable - explicitly passed from frontend)
-  if (req.query.frontend_url) {
-    const queryFrontendUrl = removeTrailingSlash(req.query.frontend_url);
-    // Check if it's in allowed domains OR if it's a valid production URL (not localhost)
-    if (ALLOWED_FRONTEND_DOMAINS.includes(queryFrontendUrl)) {
-      frontendUrl = queryFrontendUrl;
-      console.log('✅ Using frontend URL from query parameter:', frontendUrl);
-    } else if (!queryFrontendUrl.includes('localhost') && queryFrontendUrl.startsWith('https://')) {
-      // Allow any HTTPS production URL (more flexible)
-      frontendUrl = queryFrontendUrl;
-      console.log('✅ Using frontend URL from query parameter (production):', frontendUrl);
-    } else {
-      console.warn('⚠️  Frontend URL from query not valid:', queryFrontendUrl);
+  try {
+    console.log('🔵 Google OAuth route hit - /api/auth/google');
+    console.log('   Request URL:', req.url);
+    console.log('   Request method:', req.method);
+    console.log('   Origin:', req.get('origin'));
+    console.log('   Referer:', req.get('referer'));
+    console.log('   Query params:', req.query);
+    
+    if (!GOOGLE_CLIENT_ID) {
+      console.error('❌ Google OAuth Error: GOOGLE_CLIENT_ID is not set in environment variables');
+      return res.status(500).json({
+        success: false,
+        message: 'Google OAuth is not configured. Please check your environment variables.'
+      });
     }
-  }
-  
-  // If not from query, try request origin/referer
-  if (frontendUrl === FRONTEND_URL_DEFAULT || frontendUrl.includes('localhost')) {
+
+    if (!GOOGLE_CLIENT_SECRET) {
+      console.error('❌ Google OAuth Error: GOOGLE_CLIENT_SECRET is not set in environment variables');
+      return res.status(500).json({
+        success: false,
+        message: 'Google OAuth is not fully configured. Please check your environment variables.'
+      });
+    }
+
+    const redirectUri = `${BACKEND_URL}/api/auth/google/callback`;
+    
+    // Validate BACKEND_URL is set correctly
+    if (!BACKEND_URL || (BACKEND_URL.includes('localhost') && process.env.NODE_ENV === 'production')) {
+      console.error('❌ Google OAuth Error: BACKEND_URL is not set correctly for production');
+      console.error('   Current BACKEND_URL:', BACKEND_URL);
+      console.error('   NODE_ENV:', process.env.NODE_ENV);
+      return res.status(500).json({
+        success: false,
+        message: 'Backend URL is not configured correctly. Please set BACKEND_URL environment variable.'
+      });
+    }
+    
+    // Get frontend URL - priority: query param > origin/referer > env var > default
+    let frontendUrl = FRONTEND_URL_DEFAULT;
     const requestOrigin = req.get('origin') || req.get('referer');
-    if (requestOrigin) {
-      const originUrl = requestOrigin ? getFrontendUrl(requestOrigin) : FRONTEND_URL_DEFAULT;
-      if (originUrl && !originUrl.includes('localhost')) {
-        frontendUrl = originUrl;
-        console.log('✅ Using frontend URL from request origin:', frontendUrl);
+    
+    // First, try query parameter (most reliable - explicitly passed from frontend)
+    if (req.query.frontend_url) {
+      const queryFrontendUrl = removeTrailingSlash(req.query.frontend_url);
+      // Check if it's in allowed domains OR if it's a valid production URL (not localhost)
+      if (ALLOWED_FRONTEND_DOMAINS.includes(queryFrontendUrl)) {
+        frontendUrl = queryFrontendUrl;
+        console.log('✅ Using frontend URL from query parameter:', frontendUrl);
+      } else if (!queryFrontendUrl.includes('localhost') && queryFrontendUrl.startsWith('https://')) {
+        // Allow any HTTPS production URL (more flexible)
+        frontendUrl = queryFrontendUrl;
+        console.log('✅ Using frontend URL from query parameter (production):', frontendUrl);
+      } else {
+        console.warn('⚠️  Frontend URL from query not valid:', queryFrontendUrl);
       }
     }
-  }
-  
-  // Final check: if still localhost in production, use environment variable or default
-  if (frontendUrl.includes('localhost') && process.env.NODE_ENV === 'production') {
-    if (process.env.FRONTEND_URL) {
-      frontendUrl = removeTrailingSlash(process.env.FRONTEND_URL);
-      console.log('✅ Using frontend URL from environment variable:', frontendUrl);
-    } else {
-      frontendUrl = 'https://www.knowhowindia.in';
-      console.log('✅ Using production default frontend URL:', frontendUrl);
+    
+    // If not from query, try request origin/referer
+    if (frontendUrl === FRONTEND_URL_DEFAULT || frontendUrl.includes('localhost')) {
+      if (requestOrigin) {
+        const originUrl = getFrontendUrl(requestOrigin);
+        if (originUrl && !originUrl.includes('localhost')) {
+          frontendUrl = originUrl;
+          console.log('✅ Using frontend URL from request origin:', frontendUrl);
+        }
+      }
     }
+    
+    // Final check: if still localhost in production, use environment variable or default
+    if (frontendUrl.includes('localhost') && process.env.NODE_ENV === 'production') {
+      if (process.env.FRONTEND_URL) {
+        frontendUrl = removeTrailingSlash(process.env.FRONTEND_URL);
+        console.log('✅ Using frontend URL from environment variable:', frontendUrl);
+      } else {
+        frontendUrl = 'https://www.knowhowindia.in';
+        console.log('✅ Using production default frontend URL:', frontendUrl);
+      }
+    }
+    
+    // Store frontend URL in state parameter for callback
+    const state = Buffer.from(JSON.stringify({ frontendUrl })).toString('base64');
+    
+    console.log('✅ Google OAuth Initiated:', {
+      redirectUri,
+      backendUrl: BACKEND_URL,
+      frontendUrl: frontendUrl,
+      requestOrigin: requestOrigin || 'none',
+      clientId: GOOGLE_CLIENT_ID ? GOOGLE_CLIENT_ID.substring(0, 20) + '...' : 'NOT SET',
+      redirectUriForGoogle: redirectUri,
+      note: 'Make sure this redirectUri is added to Google Cloud Console Authorized redirect URIs'
+    });
+
+    const scope = 'openid email profile';
+    const responseType = 'code';
+    const accessType = 'offline';
+    const prompt = 'consent';
+
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+      `client_id=${GOOGLE_CLIENT_ID}&` +
+      `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+      `response_type=${responseType}&` +
+      `scope=${encodeURIComponent(scope)}&` +
+      `access_type=${accessType}&` +
+      `prompt=${prompt}&` +
+      `state=${encodeURIComponent(state)}`;
+
+    res.redirect(authUrl);
+  } catch (error) {
+    console.error('❌ Error in Google OAuth initiation:', error);
+    console.error('   Error stack:', error.stack);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error during OAuth initiation',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
-  
-  // Store frontend URL in state parameter for callback
-  const state = Buffer.from(JSON.stringify({ frontendUrl })).toString('base64');
-  
-  console.log('✅ Google OAuth Initiated:', {
-    redirectUri,
-    backendUrl: BACKEND_URL,
-    frontendUrl: frontendUrl,
-    requestOrigin: requestOrigin,
-    clientId: GOOGLE_CLIENT_ID ? GOOGLE_CLIENT_ID.substring(0, 20) + '...' : 'NOT SET',
-    redirectUriForGoogle: redirectUri,
-    note: 'Make sure this redirectUri is added to Google Cloud Console Authorized redirect URIs'
-  });
-
-  const scope = 'openid email profile';
-  const responseType = 'code';
-  const accessType = 'offline';
-  const prompt = 'consent';
-
-  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-    `client_id=${GOOGLE_CLIENT_ID}&` +
-    `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-    `response_type=${responseType}&` +
-    `scope=${encodeURIComponent(scope)}&` +
-    `access_type=${accessType}&` +
-    `prompt=${prompt}&` +
-    `state=${encodeURIComponent(state)}`;
-
-  res.redirect(authUrl);
 });
 
 // Google OAuth - Callback (handles Google redirect)
