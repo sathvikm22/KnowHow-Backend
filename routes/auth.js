@@ -903,26 +903,47 @@ router.get('/google/callback', async (req, res) => {
   try {
     const { code, error, state } = req.query;
 
-    // Try to get frontend URL from state parameter or referer header
+    // Try to get frontend URL from state parameter first (most reliable)
     let frontendUrl = FRONTEND_URL_DEFAULT;
+    
     if (state) {
       try {
-        const stateData = JSON.parse(Buffer.from(state, 'base64').toString());
-        if (stateData.frontendUrl && ALLOWED_FRONTEND_DOMAINS.includes(stateData.frontendUrl)) {
-          frontendUrl = stateData.frontendUrl;
+        const decodedState = Buffer.from(state, 'base64').toString();
+        const stateData = JSON.parse(decodedState);
+        console.log('📦 Parsed state data:', stateData);
+        
+        if (stateData.frontendUrl) {
+          const cleanUrl = removeTrailingSlash(stateData.frontendUrl);
+          if (ALLOWED_FRONTEND_DOMAINS.includes(cleanUrl)) {
+            frontendUrl = cleanUrl;
+            console.log('✅ Using frontend URL from state:', frontendUrl);
+          } else {
+            console.warn('⚠️  Frontend URL from state not in allowed domains:', cleanUrl);
+          }
         }
       } catch (e) {
-        // Ignore state parsing errors
+        console.error('❌ Error parsing state parameter:', e.message);
+        console.error('   State value:', state);
       }
     }
     
-    // Also check referer header as fallback
+    // If still using default, check if it's localhost in production (this is wrong!)
+    if (frontendUrl.includes('localhost') && process.env.NODE_ENV === 'production') {
+      console.error('❌ CRITICAL: Using localhost in production!');
+      console.error('   FRONTEND_URL env var:', process.env.FRONTEND_URL);
+      console.error('   FRONTEND_URL_DEFAULT:', FRONTEND_URL_DEFAULT);
+      console.error('   Falling back to production default: https://www.knowhowindia.in');
+      frontendUrl = 'https://www.knowhowindia.in';
+    }
+    
+    // Also check referer header as fallback (less reliable for OAuth callbacks)
     const referer = req.get('referer');
-    if (referer) {
+    if (referer && frontendUrl.includes('localhost')) {
       try {
         const refererOrigin = new URL(referer).origin;
         if (ALLOWED_FRONTEND_DOMAINS.includes(refererOrigin)) {
           frontendUrl = refererOrigin;
+          console.log('✅ Using frontend URL from referer:', frontendUrl);
         }
       } catch (e) {
         // Ignore referer parsing errors
