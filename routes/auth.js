@@ -834,6 +834,7 @@ router.get('/google', (req, res) => {
   console.log('   Request method:', req.method);
   console.log('   Origin:', req.get('origin'));
   console.log('   Referer:', req.get('referer'));
+  console.log('   Query params:', req.query);
   
   if (!GOOGLE_CLIENT_ID) {
     console.error('❌ Google OAuth Error: GOOGLE_CLIENT_ID is not set in environment variables');
@@ -864,9 +865,47 @@ router.get('/google', (req, res) => {
     });
   }
   
-  // Get frontend URL from request origin or default
-  const requestOrigin = req.get('origin') || req.get('referer');
-  const frontendUrl = requestOrigin ? getFrontendUrl(requestOrigin) : FRONTEND_URL_DEFAULT;
+  // Get frontend URL - priority: query param > origin/referer > env var > default
+  let frontendUrl = FRONTEND_URL_DEFAULT;
+  
+  // First, try query parameter (most reliable - explicitly passed from frontend)
+  if (req.query.frontend_url) {
+    const queryFrontendUrl = removeTrailingSlash(req.query.frontend_url);
+    // Check if it's in allowed domains OR if it's a valid production URL (not localhost)
+    if (ALLOWED_FRONTEND_DOMAINS.includes(queryFrontendUrl)) {
+      frontendUrl = queryFrontendUrl;
+      console.log('✅ Using frontend URL from query parameter:', frontendUrl);
+    } else if (!queryFrontendUrl.includes('localhost') && queryFrontendUrl.startsWith('https://')) {
+      // Allow any HTTPS production URL (more flexible)
+      frontendUrl = queryFrontendUrl;
+      console.log('✅ Using frontend URL from query parameter (production):', frontendUrl);
+    } else {
+      console.warn('⚠️  Frontend URL from query not valid:', queryFrontendUrl);
+    }
+  }
+  
+  // If not from query, try request origin/referer
+  if (frontendUrl === FRONTEND_URL_DEFAULT || frontendUrl.includes('localhost')) {
+    const requestOrigin = req.get('origin') || req.get('referer');
+    if (requestOrigin) {
+      const originUrl = requestOrigin ? getFrontendUrl(requestOrigin) : FRONTEND_URL_DEFAULT;
+      if (originUrl && !originUrl.includes('localhost')) {
+        frontendUrl = originUrl;
+        console.log('✅ Using frontend URL from request origin:', frontendUrl);
+      }
+    }
+  }
+  
+  // Final check: if still localhost in production, use environment variable or default
+  if (frontendUrl.includes('localhost') && process.env.NODE_ENV === 'production') {
+    if (process.env.FRONTEND_URL) {
+      frontendUrl = removeTrailingSlash(process.env.FRONTEND_URL);
+      console.log('✅ Using frontend URL from environment variable:', frontendUrl);
+    } else {
+      frontendUrl = 'https://www.knowhowindia.in';
+      console.log('✅ Using production default frontend URL:', frontendUrl);
+    }
+  }
   
   // Store frontend URL in state parameter for callback
   const state = Buffer.from(JSON.stringify({ frontendUrl })).toString('base64');
