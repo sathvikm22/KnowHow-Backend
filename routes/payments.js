@@ -1232,23 +1232,46 @@ router.get('/available-slots', async (req, res) => {
     }
 
     // Get all time slots for the activity (from Booking.tsx logic)
+    // Handle different activity name variations
     let timeSlots = [];
-    if (activity_name === 'Jewellery Lab' || activity_name === 'Jewelry Making') {
+    const normalizedActivityName = activity_name.toLowerCase().trim();
+    
+    if (normalizedActivityName.includes('jewellery') || normalizedActivityName.includes('jewelry making')) {
       timeSlots = ['11am-1pm', '1-3pm', '3-5pm', '5-7pm', '7-9pm'];
-    } else if (activity_name === 'Tufting Experience') {
+    } else if (normalizedActivityName.includes('tufting')) {
       timeSlots = ['11am-1:30pm', '2-4:30pm', '5-7:30pm'];
     } else {
       timeSlots = ['11am-1pm', '1-3pm', '3-5pm', '5-8pm'];
     }
 
+    console.log('Fetching available slots:', { activity_name, booking_date, timeSlots });
+
     // Get booked slots for this activity and date
-    const { data: bookedSlots, error } = await supabase
+    // Get all bookings for this date and filter by activity/combo name (handles variations)
+    const { data: allBookings, error } = await supabase
       .from('bookings')
-      .select('booking_time_slot')
-      .eq('activity_name', activity_name)
+      .select('booking_time_slot, activity_name, combo_name')
       .eq('booking_date', booking_date)
       .in('status', ['pending', 'confirmed'])
       .neq('payment_status', 'refunded');
+    
+    let bookedSlots = [];
+    if (allBookings && !error) {
+      // Filter bookings that match the activity (check both activity_name and combo_name)
+      bookedSlots = allBookings
+        .filter(b => {
+          const bookingActivity = (b.activity_name || '').toLowerCase().trim();
+          const bookingCombo = (b.combo_name || '').toLowerCase().trim();
+          const searchActivity = activity_name.toLowerCase().trim();
+          
+          // Match if activity_name or combo_name matches (case-insensitive)
+          return bookingActivity === searchActivity || 
+                 bookingCombo === searchActivity ||
+                 bookingActivity.includes(searchActivity) ||
+                 searchActivity.includes(bookingActivity);
+        })
+        .map((b: any) => ({ booking_time_slot: b.booking_time_slot }));
+    }
 
     if (error) {
       console.error('Error fetching booked slots:', error);
@@ -1258,8 +1281,11 @@ router.get('/available-slots', async (req, res) => {
       });
     }
 
-    const bookedTimeSlots = bookedSlots?.map(b => b.booking_time_slot) || [];
+    const bookedTimeSlots = bookedSlots?.map((b: any) => b.booking_time_slot) || [];
     const availableSlots = timeSlots.filter(slot => !bookedTimeSlots.includes(slot));
+    
+    console.log('Booked slots:', bookedTimeSlots);
+    console.log('Available slots:', availableSlots);
 
     res.json({
       success: true,
