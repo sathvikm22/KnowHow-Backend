@@ -810,9 +810,40 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
         });
       }
 
-      // Cashfree expects amount in paise (smallest currency unit)
-      // booking.amount is in rupees, so convert to paise
-      const refundAmountInPaise = Math.round(booking.amount * 100);
+      // Get payment record to check original amount and already refunded amount
+      const { data: payment } = await supabase
+        .from('payments')
+        .select('amount, refund_amount, refund_status, refund_ids, cashfree_payment_id')
+        .eq('cashfree_order_id', orderId)
+        .single();
+
+      let refundAmountInPaise;
+      
+      if (payment) {
+        // Calculate refundable amount
+        // payment.amount is in paise, refund_amount is also in paise
+        const originalAmountInPaise = payment.amount || 0;
+        const alreadyRefundedInPaise = payment.refund_amount || 0;
+        const refundableAmountInPaise = originalAmountInPaise - alreadyRefundedInPaise;
+        
+        if (refundableAmountInPaise <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'No refundable amount available. This booking may have already been fully refunded.'
+          });
+        }
+        
+        // Refund the full refundable amount
+        refundAmountInPaise = refundableAmountInPaise;
+        
+        console.log(`Refunding ${refundAmountInPaise} paise (${refundAmountInPaise / 100} rupees) out of original ${originalAmountInPaise} paise (${originalAmountInPaise / 100} rupees)`);
+      } else {
+        // No payment record found, use booking amount (fallback for legacy bookings)
+        // Cashfree expects amount in paise (smallest currency unit)
+        // booking.amount is in rupees, so convert to paise
+        refundAmountInPaise = Math.round(booking.amount * 100);
+        console.log(`No payment record found, using booking amount: ${refundAmountInPaise} paise`);
+      }
       
       const refundData = {
         refund_amount: refundAmountInPaise,
@@ -821,6 +852,8 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
         refund_type: 'MERCHANT_INITIATED'
       };
 
+      console.log('Initiating refund with Cashfree:', refundData);
+
       const refundResponse = await axios.post(
         `${CASHFREE_API_URL}/orders/${orderId}/refunds`,
         refundData,
@@ -828,14 +861,18 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
       );
 
       const refund = refundResponse.data;
+      console.log('Cashfree refund response:', refund);
 
+      // Calculate refund amount in rupees for database storage
+      const refundAmountInRupees = refundAmountInPaise / 100;
+      
       // Update booking with refund details
       const updateResult = await supabase
         .from('bookings')
         .update({
           refund_id: refund.refund_id,
           refund_status: 'initiated',
-          refund_amount: booking.amount,
+          refund_amount: refundAmountInRupees,
           refund_reason: reason || 'Customer requested cancellation',
           refund_initiated_at: new Date().toISOString(),
           status: 'cancelled'
@@ -852,6 +889,25 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
         });
       }
 
+      // Update payment record with refund details if payment record exists
+      if (payment) {
+        const newRefundAmount = (payment.refund_amount || 0) + refundAmountInPaise;
+        const newRefundStatus = newRefundAmount >= payment.amount ? 'full' : 'partial';
+        
+        const existingRefundIds = Array.isArray(payment.refund_ids) ? payment.refund_ids : [];
+        const updatedRefundIds = [...existingRefundIds, refund.refund_id];
+        
+        await supabase
+          .from('payments')
+          .update({
+            refund_status: newRefundStatus,
+            refund_amount: newRefundAmount,
+            refund_ids: updatedRefundIds,
+            status: newRefundStatus === 'full' ? 'refunded' : 'partially_refunded'
+          })
+          .eq('cashfree_payment_id', payment.cashfree_payment_id);
+      }
+
       // Return booking data for receipt generation
       const { data: updatedBooking } = await supabase
         .from('bookings')
@@ -861,15 +917,29 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
 
       res.json({
         success: true,
-        message: 'Refund initiated successfully',
+        message: 'Refund initiated successfully. The refund will be processed within 5-7 business days.',
         refund_id: refund.refund_id,
+        refund_amount: refundAmountInRupees,
         booking: updatedBooking
       });
     } catch (refundError) {
       console.error('Error initiating refund:', refundError);
+      console.error('Refund error response:', refundError.response?.data);
+      console.error('Refund error status:', refundError.response?.status);
+      
+      const errorMessage = refundError.response?.data?.message || refundError.message || 'Failed to initiate refund';
+      
+      // Provide more specific error messages
+      if (errorMessage.includes('cannot be greater than the transaction amount')) {
+        return res.status(400).json({
+          success: false,
+          message: 'Refund amount exceeds available balance. This booking may have already been partially refunded. Please contact support.'
+        });
+      }
+      
       return res.status(500).json({
         success: false,
-        message: refundError.response?.data?.message || refundError.message || 'Failed to initiate refund'
+        message: errorMessage
       });
     }
   } catch (error) {
