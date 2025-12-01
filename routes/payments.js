@@ -1,32 +1,47 @@
 import express from 'express';
-import Razorpay from 'razorpay';
+import axios from 'axios';
 import crypto from 'crypto';
 import { supabase } from '../config/supabase.js';
 
 const router = express.Router();
 
-// Initialize Razorpay (only if keys are provided)
-let razorpay = null;
-if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
-  razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_KEY_SECRET,
-  });
-  console.log('✅ Razorpay initialized successfully');
-} else {
-  console.log('⚠️  Razorpay not configured - API keys missing. Payment features will be disabled.');
-  console.log('   To enable: Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in .env file');
-}
+// Cashfree Configuration
+const CASHFREE_APP_ID = process.env.CASHFREE_APP_ID;
+const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
+const CASHFREE_MODE = process.env.CASHFREE_MODE || 'production'; // 'production' or 'sandbox'
+const CASHFREE_API_URL = CASHFREE_MODE === 'production' 
+  ? 'https://api.cashfree.com/pg' 
+  : 'https://sandbox.cashfree.com/pg';
 
-// Helper function to check if Razorpay is configured
-const isRazorpayConfigured = () => {
-  if (!razorpay) {
+// Helper function to check if Cashfree is configured
+const isCashfreeConfigured = () => {
+  if (!CASHFREE_APP_ID || !CASHFREE_SECRET_KEY) {
     return false;
   }
   return true;
 };
 
-// Create Razorpay order (for bookings)
+// Initialize Cashfree
+if (isCashfreeConfigured()) {
+  console.log('✅ Cashfree initialized successfully');
+  console.log('   Mode:', CASHFREE_MODE);
+  console.log('   API URL:', CASHFREE_API_URL);
+} else {
+  console.log('⚠️  Cashfree not configured - API keys missing. Payment features will be disabled.');
+  console.log('   To enable: Set CASHFREE_APP_ID and CASHFREE_SECRET_KEY in .env file');
+}
+
+// Helper function to get Cashfree headers
+const getCashfreeHeaders = () => {
+  return {
+    'x-client-id': CASHFREE_APP_ID,
+    'x-client-secret': CASHFREE_SECRET_KEY,
+    'x-api-version': '2023-08-01',
+    'Content-Type': 'application/json'
+  };
+};
+
+// Create Cashfree payment session (for bookings)
 router.post('/create-order', async (req, res) => {
   try {
     console.log('Create order request received:', { 
@@ -34,7 +49,7 @@ router.post('/create-order', async (req, res) => {
       hasSlotDetails: !!req.body.slotDetails 
     });
     
-    if (!isRazorpayConfigured()) {
+    if (!isCashfreeConfigured()) {
       return res.status(503).json({
         success: false,
         message: 'Payment gateway is not configured. Please contact administrator.'
@@ -90,63 +105,205 @@ router.post('/create-order', async (req, res) => {
       }
     }
 
-    // Convert amount to paise (Razorpay expects amount in smallest currency unit)
-    const amountInPaise = Math.round(amount * 100);
-
-    // Generate receipt ID
+    // Generate order ID
     const timestamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
     const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const receiptId = `KH-${timestamp}-${random}`;
+    const orderId = `KH-${timestamp}-${random}`;
 
-    // Create Razorpay order
-    console.log('Creating Razorpay order with amount:', amountInPaise);
-    const razorpayOrder = await razorpay.orders.create({
-      amount: amountInPaise,
-      currency: 'INR',
-      receipt: receiptId,
-      notes: {
+    // Get frontend URL for return URLs
+    // Cashfree requires HTTPS URLs, so use production URL even in development
+    let frontendUrl = process.env.FRONTEND_URL || 'https://www.knowhowindia.in';
+    
+    // If localhost is detected, use production URL for Cashfree (they require HTTPS)
+    if (frontendUrl.includes('localhost') || frontendUrl.includes('127.0.0.1')) {
+      console.log('⚠️  Localhost detected, using production URL for Cashfree return_url (HTTPS required)');
+      frontendUrl = 'https://www.knowhowindia.in';
+    }
+    
+    // Ensure HTTPS
+    if (!frontendUrl.startsWith('https://')) {
+      frontendUrl = frontendUrl.replace(/^http:\/\//, 'https://');
+    }
+    
+    const returnUrl = `${frontendUrl}/payment-processing?order_id=${orderId}&type=booking`;
+    
+    // Backend URL for webhook (also needs HTTPS in production)
+    let backendUrl = process.env.BACKEND_URL || 'https://knowhow-backend-d2gs.onrender.com';
+    if (backendUrl.includes('localhost') || backendUrl.includes('127.0.0.1')) {
+      // For local development, use production backend URL for webhook
+      backendUrl = 'https://knowhow-backend-d2gs.onrender.com';
+    }
+    if (!backendUrl.startsWith('https://')) {
+      backendUrl = backendUrl.replace(/^http:\/\//, 'https://');
+    }
+    const notifyUrl = `${backendUrl}/api/webhook`;
+
+    // Create payment session with Cashfree
+    console.log('Creating Cashfree payment session with amount:', amount);
+    
+    // Validate and format phone number (Cashfree requires 10 digits for India)
+    let formattedPhone = customerPhone.replace(/[^0-9]/g, '');
+    // Remove country code if present (91XXXXXXXXXX -> XXXXXXXXXX)
+    if (formattedPhone.length > 10 && formattedPhone.startsWith('91')) {
+      formattedPhone = formattedPhone.substring(2);
+    }
+    // Ensure exactly 10 digits
+    if (formattedPhone.length !== 10) {
+      console.error('Invalid phone number format:', customerPhone, '->', formattedPhone);
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number must be exactly 10 digits. Please enter a valid Indian mobile number.'
+      });
+    }
+    
+    // Ensure amount is a number (not string)
+    const orderAmount = typeof amount === 'string' ? parseFloat(amount) : amount;
+    if (isNaN(orderAmount) || orderAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid amount. Amount must be a positive number.'
+      });
+    }
+    
+    const paymentSessionData = {
+      order_id: orderId,
+      order_amount: orderAmount,
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: userId || customerEmail,
         customer_name: customerName,
         customer_email: customerEmail,
-        customer_phone: customerPhone,
-        booking_date: bookingDate,
-        booking_time_slot: bookingTimeSlot,
-        activities: selectedActivities?.join(', ') || '',
-        combo_name: comboName || '',
-        participants: participants?.toString() || '1'
-      }
-    });
+        customer_phone: formattedPhone,
+      },
+      order_meta: {
+        return_url: returnUrl,
+        notify_url: notifyUrl,
+        payment_methods: 'cc,dc,upi,nb' // cc=credit card, dc=debit card, upi=UPI, nb=netbanking
+      },
+      order_note: `Booking for ${selectedActivities?.join(', ') || comboName || 'Activity'} on ${bookingDate} at ${bookingTimeSlot}`
+    };
+
+    // Cashfree API endpoint: /pg/orders (creates order and returns payment_session_id)
+    const cashfreeOrderUrl = `${CASHFREE_API_URL}/orders`;
     
-    console.log('Razorpay order created:', razorpayOrder.id);
+    console.log('Cashfree request URL:', cashfreeOrderUrl);
+    console.log('Cashfree request headers:', {
+      'x-client-id': CASHFREE_APP_ID ? `${CASHFREE_APP_ID.substring(0, 10)}...` : 'MISSING',
+      'x-client-secret': CASHFREE_SECRET_KEY ? 'SET' : 'MISSING',
+      'x-api-version': '2023-08-01'
+    });
+    console.log('Return URL (must be HTTPS):', returnUrl);
+    console.log('Notify URL (must be HTTPS):', notifyUrl);
+    console.log('Cashfree request body:', JSON.stringify(paymentSessionData, null, 2));
+
+    let sessionResponse;
+    try {
+      sessionResponse = await axios.post(
+        cashfreeOrderUrl,
+        paymentSessionData,
+        { headers: getCashfreeHeaders() }
+      );
+    } catch (axiosError) {
+      console.error('=== Cashfree API Error Details ===');
+      console.error('Status:', axiosError.response?.status);
+      console.error('Status Text:', axiosError.response?.statusText);
+      console.error('Response Data:', JSON.stringify(axiosError.response?.data, null, 2));
+      console.error('Request URL:', axiosError.config?.url);
+      console.error('Request Headers:', axiosError.config?.headers);
+      console.error('Request Data:', JSON.stringify(axiosError.config?.data, null, 2));
+      console.error('Full Error:', axiosError.message);
+      console.error('===================================');
+      
+      // Extract error message from Cashfree response
+      const cashfreeError = axiosError.response?.data;
+      let errorMessage = 'Failed to create payment session with Cashfree.';
+      
+      if (cashfreeError) {
+        // Cashfree error format: { message: "...", ... } or { error: "...", ... }
+        if (cashfreeError.message) {
+          errorMessage = cashfreeError.message;
+        } else if (cashfreeError.error) {
+          errorMessage = cashfreeError.error;
+        } else if (Array.isArray(cashfreeError) && cashfreeError.length > 0) {
+          // Sometimes Cashfree returns array of errors
+          errorMessage = cashfreeError[0].message || cashfreeError[0].error || errorMessage;
+        }
+      }
+      
+      return res.status(500).json({
+        success: false,
+        message: errorMessage,
+        error: errorMessage,
+        details: cashfreeError,
+        status: axiosError.response?.status,
+        statusText: axiosError.response?.statusText
+      });
+    }
+
+    console.log('Cashfree API response:', JSON.stringify(sessionResponse.data, null, 2));
+
+    // Cashfree API returns payment_session_id directly in data
+    const paymentSessionId = sessionResponse.data?.payment_session_id || sessionResponse.data?.data?.payment_session_id;
+    
+    if (!paymentSessionId) {
+      console.error('Cashfree API response missing payment_session_id:', sessionResponse.data);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to create payment session. Payment gateway returned invalid response.',
+        error: sessionResponse.data?.message || 'payment_session_id missing in response',
+        response: sessionResponse.data
+      });
+    }
+
+    console.log('Cashfree payment session created:', paymentSessionId);
 
     // Save booking to database with pending_payment status
     console.log('Saving booking to database...');
+    
+    // Build booking data object
+    const bookingData = {
+      user_id: userId,
+      user_email: userEmail,
+      user_name: customerName,
+      user_phone: customerPhone,
+      user_address: customerAddress,
+      activity_name: selectedActivities?.[0] || comboName || 'Activity',
+      combo_name: comboName,
+      selected_activities: selectedActivities || [],
+      booking_date: bookingDate,
+      booking_time_slot: bookingTimeSlot,
+      participants: participants || 1,
+      amount: amount,
+      currency: 'INR',
+      payment_status: 'pending_payment',
+      status: 'pending',
+      internal_bill_id: orderId,
+      notes: notes
+    };
+
+    // Add Cashfree fields if columns exist (will fail gracefully if they don't)
+    bookingData.cashfree_order_id = orderId;
+    bookingData.cashfree_payment_session_id = paymentSessionId;
+
     const { data: booking, error: bookingError } = await supabase
       .from('bookings')
-      .insert({
-        user_id: userId,
-        user_email: userEmail,
-        user_name: customerName,
-        user_phone: customerPhone,
-        user_address: customerAddress,
-        activity_name: selectedActivities?.[0] || comboName || 'Activity',
-        combo_name: comboName,
-        selected_activities: selectedActivities || [],
-        booking_date: bookingDate,
-        booking_time_slot: bookingTimeSlot,
-        participants: participants || 1,
-        razorpay_order_id: razorpayOrder.id,
-        amount: amount,
-        currency: 'INR',
-        payment_status: 'pending_payment',
-        status: 'pending',
-        internal_bill_id: receiptId,
-        notes: notes
-      })
+      .insert(bookingData)
       .select()
       .single();
 
     if (bookingError) {
       console.error('Error saving booking:', bookingError);
+      console.error('Booking data attempted:', JSON.stringify(bookingData, null, 2));
+      
+      // If error is about missing columns, provide helpful message
+      if (bookingError.message?.includes('cashfree') || bookingError.code === 'PGRST116') {
+        return res.status(500).json({
+          success: false,
+          message: 'Database columns missing. Please run the SQL migration: backend/sql/add-cashfree-columns.sql',
+          error: bookingError.message
+        });
+      }
+      
       return res.status(500).json({
         success: false,
         message: 'Failed to save booking: ' + bookingError.message
@@ -158,18 +315,19 @@ router.post('/create-order', async (req, res) => {
     res.json({
       success: true,
       data: {
-        order_id: razorpayOrder.id,
+        order_id: orderId,
+        payment_session_id: paymentSessionId,
         amount: amount,
         currency: 'INR',
-        receipt: receiptId
+        receipt: orderId
       }
     });
   } catch (error) {
-    console.error('Error creating Razorpay order:', error);
-    console.error('Error stack:', error.stack);
+    console.error('Error creating Cashfree order:', error);
+    console.error('Error response:', error.response?.data);
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to create order'
+      message: error.response?.data?.message || error.message || 'Failed to create order'
     });
   }
 });
@@ -177,89 +335,72 @@ router.post('/create-order', async (req, res) => {
 // Verify payment and update booking
 router.post('/verify-payment', async (req, res) => {
   try {
-    if (!isRazorpayConfigured()) {
+    if (!isCashfreeConfigured()) {
       return res.status(503).json({
         success: false,
         message: 'Payment gateway is not configured. Please contact administrator.'
       });
     }
 
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    const { cashfree_order_id, cashfree_payment_id } = req.body;
 
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    if (!cashfree_order_id || !cashfree_payment_id) {
       return res.status(400).json({
         success: false,
         message: 'Missing payment details'
       });
     }
 
-    // Verify signature
-    const text = `${razorpay_order_id}|${razorpay_payment_id}`;
-    const generatedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(text)
-      .digest('hex');
+    // Get payment details from Cashfree
+    const paymentResponse = await axios.get(
+      `${CASHFREE_API_URL}/orders/${cashfree_order_id}/payments/${cashfree_payment_id}`,
+      { headers: getCashfreeHeaders() }
+    );
 
-    if (generatedSignature !== razorpay_signature) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid payment signature'
-      });
-    }
+    const payment = paymentResponse.data;
+    const paymentStatus = payment.payment_status;
 
-    // Get payment details from Razorpay
-    const payment = await razorpay.payments.fetch(razorpay_payment_id);
+    // Update booking in database - try cashfree_order_id first, fallback to razorpay_order_id for migration
+    let booking = null;
+    let updateError = null;
+    
+    // Try with cashfree_order_id first
+    const updateData = {
+      cashfree_payment_id: cashfree_payment_id,
+      payment_status: paymentStatus === 'SUCCESS' ? 'paid' : 'failed',
+      payment_method: payment.payment_method || 'unknown',
+      status: paymentStatus === 'SUCCESS' ? 'confirmed' : 'pending'
+    };
 
-    // Check if this is a balance payment
-    const { data: existingBooking } = await supabase
+    const result = await supabase
       .from('bookings')
-      .select('*')
-      .eq('balance_payment_order_id', razorpay_order_id)
-      .maybeSingle();
-
-    if (existingBooking && payment.status === 'captured') {
-      // This is a balance payment - update the booking
-      const { data: booking, error: updateError } = await supabase
-        .from('bookings')
-        .update({
-          balance_payment_id: razorpay_payment_id,
-          balance_payment_status: 'paid',
-          balance_payment_method: payment.method,
-          amount: existingBooking.amount + (existingBooking.balance_amount || 0)
-        })
-        .eq('id', existingBooking.id)
-        .select()
-        .single();
-
-      if (updateError) {
-        console.error('Error updating booking with balance payment:', updateError);
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to update booking with balance payment'
-        });
-      }
-
-      return res.json({
-        success: true,
-        payment_status: 'paid',
-        booking: booking,
-        is_balance_payment: true
-      });
-    }
-
-    // Regular payment - update booking in database
-    const { data: booking, error: updateError } = await supabase
-      .from('bookings')
-      .update({
-        razorpay_payment_id: razorpay_payment_id,
-        razorpay_signature: razorpay_signature,
-        payment_status: payment.status === 'captured' ? 'paid' : 'failed',
-        payment_method: payment.method,
-        status: payment.status === 'captured' ? 'confirmed' : 'pending'
-      })
-      .eq('razorpay_order_id', razorpay_order_id)
+      .update(updateData)
+      .eq('cashfree_order_id', cashfree_order_id)
       .select()
       .single();
+
+    if (result.error) {
+      // Try with razorpay_order_id for backward compatibility during migration
+      const legacyResult = await supabase
+        .from('bookings')
+        .update({
+          razorpay_payment_id: cashfree_payment_id,
+          payment_status: paymentStatus === 'SUCCESS' ? 'paid' : 'failed',
+          payment_method: payment.payment_method || 'unknown',
+          status: paymentStatus === 'SUCCESS' ? 'confirmed' : 'pending'
+        })
+        .eq('razorpay_order_id', cashfree_order_id)
+        .select()
+        .single();
+      
+      if (legacyResult.error) {
+        updateError = legacyResult.error;
+      } else {
+        booking = legacyResult.data;
+      }
+    } else {
+      booking = result.data;
+    }
 
     if (updateError) {
       console.error('Error updating booking:', updateError);
@@ -270,15 +411,15 @@ router.post('/verify-payment', async (req, res) => {
     }
 
     res.json({
-      success: true,
-      payment_status: payment.status === 'captured' ? 'paid' : 'failed',
+      success: paymentStatus === 'SUCCESS',
+      payment_status: paymentStatus === 'SUCCESS' ? 'paid' : 'failed',
       booking: booking
     });
   } catch (error) {
     console.error('Error verifying payment:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to verify payment'
+      message: error.response?.data?.message || error.message || 'Failed to verify payment'
     });
   }
 });
@@ -288,17 +429,66 @@ router.get('/check-payment-status/:order_id', async (req, res) => {
   try {
     const { order_id } = req.params;
 
-    const { data: booking, error } = await supabase
+    // Try cashfree_order_id first, fallback to razorpay_order_id for migration
+    let { data: booking, error } = await supabase
       .from('bookings')
       .select('*')
-      .eq('razorpay_order_id', order_id)
+      .eq('cashfree_order_id', order_id)
       .single();
 
     if (error || !booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
+      // Try with legacy razorpay_order_id
+      const legacyResult = await supabase
+        .from('bookings')
+        .select('*')
+        .eq('razorpay_order_id', order_id)
+        .single();
+      
+      if (legacyResult.error || !legacyResult.data) {
+        return res.status(404).json({
+          success: false,
+          message: 'Booking not found'
+        });
+      }
+      booking = legacyResult.data;
+    }
+
+    // If payment is still pending, check with Cashfree
+    if (booking.payment_status === 'pending_payment' && isCashfreeConfigured()) {
+      try {
+        const orderResponse = await axios.get(
+          `${CASHFREE_API_URL}/orders/${order_id}`,
+          { headers: getCashfreeHeaders() }
+        );
+
+        const orderStatus = orderResponse.data.order_status;
+        if (orderStatus === 'PAID') {
+          // Update booking status - try cashfree_order_id first
+          const updateResult = await supabase
+            .from('bookings')
+            .update({
+              payment_status: 'paid',
+              status: 'confirmed'
+            })
+            .eq('cashfree_order_id', order_id);
+          
+          // If that fails, try with razorpay_order_id for migration
+          if (updateResult.error) {
+            await supabase
+              .from('bookings')
+              .update({
+                payment_status: 'paid',
+                status: 'confirmed'
+              })
+              .eq('razorpay_order_id', order_id);
+          }
+          
+          booking.payment_status = 'paid';
+          booking.status = 'confirmed';
+        }
+      } catch (cfError) {
+        console.error('Error checking Cashfree order status:', cfError);
+      }
     }
 
     res.json({
@@ -321,23 +511,24 @@ router.get('/check-payment-status/:order_id', async (req, res) => {
   }
 });
 
-// Razorpay webhook handler
+// Cashfree webhook handler
 router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
-    const signature = req.headers['x-razorpay-signature'];
-    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const signature = req.headers['x-cashfree-signature'];
+    // Cashfree uses the API Secret Key (not a separate webhook secret)
+    const apiSecretKey = process.env.CASHFREE_SECRET_KEY;
 
-    if (!webhookSecret) {
-      console.error('Razorpay webhook secret not configured');
-      return res.status(500).json({ success: false, message: 'Webhook secret not configured' });
+    if (!apiSecretKey) {
+      console.error('Cashfree API Secret Key not configured');
+      return res.status(500).json({ success: false, message: 'Cashfree API Secret Key not configured' });
     }
 
-    // Verify webhook signature
+    // Verify webhook signature using API Secret Key
     const text = req.body.toString();
     const generatedSignature = crypto
-      .createHmac('sha256', webhookSecret)
+      .createHmac('sha256', apiSecretKey)
       .update(text)
-      .digest('hex');
+      .digest('base64');
 
     if (generatedSignature !== signature) {
       console.error('Invalid webhook signature');
@@ -345,86 +536,219 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
     }
 
     const event = JSON.parse(text);
+    console.log('Cashfree webhook received:', event.type);
 
-    // Handle payment.captured event
-    if (event.event === 'payment.captured') {
-      const payment = event.payload.payment.entity;
-      const orderId = payment.order_id;
+    // Extract common data
+    const orderId = event.data?.order?.order_id;
+    const paymentData = event.data?.payment || {};
+    const paymentId = paymentData.payment_id;
+    const orderData = event.data?.order || {};
 
-      // Update booking status
-      await supabase
-        .from('bookings')
-        .update({
-          razorpay_payment_id: payment.id,
-          payment_status: 'paid',
-          payment_method: payment.method,
-          status: 'confirmed'
-        })
-        .eq('razorpay_order_id', orderId);
+    if (!orderId || !paymentId) {
+      console.error('Missing order_id or payment_id in webhook:', event);
+      return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
 
-    // Handle payment.failed event
-    if (event.event === 'payment.failed') {
-      const payment = event.payload.payment.entity;
-      const orderId = payment.order_id;
+    // Determine if this is a booking or DIY order based on order_id prefix
+    const isDIYOrder = orderId.startsWith('KH-DIY-');
+    const orderType = isDIYOrder ? 'diy' : 'booking';
 
-      // Update booking status
-      await supabase
-        .from('bookings')
-        .update({
-          razorpay_payment_id: payment.id,
-          payment_status: 'failed',
-          status: 'pending'
-        })
-        .eq('razorpay_order_id', orderId);
-    }
+    // Store complete Cashfree payment data
+    const cashfreePaymentData = {
+      event_type: event.type,
+      order: orderData,
+      payment: paymentData,
+      received_at: new Date().toISOString()
+    };
 
-    // Handle refund events
-    if (event.event === 'refund.created') {
-      const refund = event.payload.refund.entity;
-      const paymentId = refund.payment_id;
+    // Handle payment success event
+    if (event.type === 'PAYMENT_SUCCESS_WEBHOOK') {
+      const paymentStatus = paymentData.payment_status || 'SUCCESS';
+      const paymentMethod = paymentData.payment_method || 'unknown';
 
-      // Find booking by payment ID
-      const { data: booking } = await supabase
-        .from('bookings')
-        .select('*')
-        .eq('razorpay_payment_id', paymentId)
-        .single();
+      if (isDIYOrder) {
+        // Update DIY order
+        const { data: order, error: orderError } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('cashfree_order_id', orderId)
+          .single();
 
-      if (booking) {
-        await supabase
+        if (!orderError && order) {
+          // Update order
+          await supabase
+            .from('orders')
+            .update({
+              cashfree_payment_id: paymentId,
+              status: 'paid',
+              payment_method: paymentMethod,
+              cashfree_payment_data: cashfreePaymentData
+            })
+            .eq('cashfree_order_id', orderId);
+
+          // Save payment details to payments table
+          await supabase
+            .from('payments')
+            .insert({
+              cashfree_payment_id: paymentId,
+              cashfree_order_id: orderId,
+              internal_bill_id: order.internal_bill_id,
+              order_type: 'diy',
+              amount: paymentData.payment_amount || order.amount,
+              currency: paymentData.payment_currency || order.currency || 'INR',
+              status: 'paid',
+              method: paymentMethod,
+              email: paymentData.customer_details?.customer_email || order.customer_email,
+              contact: paymentData.customer_details?.customer_phone || order.customer_phone,
+              // Card details
+              card_last4: paymentData.payment_method_details?.card?.card_last4,
+              card_network: paymentData.payment_method_details?.card?.card_network,
+              card_type: paymentData.payment_method_details?.card?.card_type,
+              card_issuer: paymentData.payment_method_details?.card?.card_issuer,
+              // UPI details
+              upi_vpa: paymentData.payment_method_details?.upi?.vpa,
+              upi_flow: paymentData.payment_method_details?.upi?.flow,
+              bank_transaction_id: paymentData.payment_method_details?.upi?.bank_transaction_id,
+              // Netbanking details
+              bank: paymentData.payment_method_details?.netbanking?.bank,
+              account_type: paymentData.payment_method_details?.netbanking?.account_type,
+              // Wallet details
+              wallet_name: paymentData.payment_method_details?.wallet?.wallet_name,
+              wallet_transaction_id: paymentData.payment_method_details?.wallet?.wallet_transaction_id,
+              items: order.items,
+              cashfree_payment_data: cashfreePaymentData,
+              paid_at: new Date().toISOString()
+            });
+        }
+      } else {
+        // Update booking
+        const { data: booking, error: bookingError } = await supabase
           .from('bookings')
-          .update({
-            refund_id: refund.id,
-            refund_status: 'initiated',
-            refund_amount: refund.amount / 100, // Convert from paise to rupees
-            refund_initiated_at: new Date(refund.created_at * 1000).toISOString()
-          })
-          .eq('id', booking.id);
+          .select('*')
+          .eq('cashfree_order_id', orderId)
+          .single();
+
+        if (!bookingError && booking) {
+          // Update booking
+          await supabase
+            .from('bookings')
+            .update({
+              cashfree_payment_id: paymentId,
+              payment_status: 'paid',
+              payment_method: paymentMethod,
+              status: 'confirmed',
+              cashfree_payment_data: cashfreePaymentData
+            })
+            .eq('cashfree_order_id', orderId);
+
+          // Save payment details to payments table
+          await supabase
+            .from('payments')
+            .insert({
+              cashfree_payment_id: paymentId,
+              cashfree_order_id: orderId,
+              internal_bill_id: booking.internal_bill_id || orderId,
+              order_type: 'booking',
+              amount: paymentData.payment_amount || Math.round(booking.amount * 100), // Convert to paise
+              currency: paymentData.payment_currency || booking.currency || 'INR',
+              status: 'paid',
+              method: paymentMethod,
+              email: paymentData.customer_details?.customer_email || booking.user_email,
+              contact: paymentData.customer_details?.customer_phone || booking.user_phone,
+              // Card details
+              card_last4: paymentData.payment_method_details?.card?.card_last4,
+              card_network: paymentData.payment_method_details?.card?.card_network,
+              card_type: paymentData.payment_method_details?.card?.card_type,
+              card_issuer: paymentData.payment_method_details?.card?.card_issuer,
+              // UPI details
+              upi_vpa: paymentData.payment_method_details?.upi?.vpa,
+              upi_flow: paymentData.payment_method_details?.upi?.flow,
+              bank_transaction_id: paymentData.payment_method_details?.upi?.bank_transaction_id,
+              // Netbanking details
+              bank: paymentData.payment_method_details?.netbanking?.bank,
+              account_type: paymentData.payment_method_details?.netbanking?.account_type,
+              // Wallet details
+              wallet_name: paymentData.payment_method_details?.wallet?.wallet_name,
+              wallet_transaction_id: paymentData.payment_method_details?.wallet?.wallet_transaction_id,
+              items: booking.selected_activities ? [{ name: booking.activity_name, activities: booking.selected_activities }] : [],
+              cashfree_payment_data: cashfreePaymentData,
+              paid_at: new Date().toISOString()
+            });
+        }
       }
     }
 
-    if (event.event === 'refund.processed') {
-      const refund = event.payload.refund.entity;
-      const paymentId = refund.payment_id;
-
-      // Find booking by payment ID
-      const { data: booking } = await supabase
-        .from('bookings')
-        .select('*')
-        .eq('razorpay_payment_id', paymentId)
-        .single();
-
-      if (booking) {
+    // Handle payment failure event
+    if (event.type === 'PAYMENT_FAILED_WEBHOOK') {
+      if (isDIYOrder) {
+        // Update DIY order
+        await supabase
+          .from('orders')
+          .update({
+            cashfree_payment_id: paymentId,
+            status: 'failed',
+            cashfree_payment_data: cashfreePaymentData
+          })
+          .eq('cashfree_order_id', orderId);
+      } else {
+        // Update booking
         await supabase
           .from('bookings')
           .update({
-            refund_status: 'processed',
-            payment_status: 'refunded',
-            status: 'cancelled',
-            refund_processed_at: new Date().toISOString()
+            cashfree_payment_id: paymentId,
+            payment_status: 'failed',
+            status: 'pending',
+            cashfree_payment_data: cashfreePaymentData
           })
-          .eq('id', booking.id);
+          .eq('cashfree_order_id', orderId);
+      }
+    }
+
+    // Handle refund event (only for bookings)
+    if (event.type === 'REFUND_WEBHOOK' && !isDIYOrder) {
+      const refundData = event.data?.refund || {};
+      const refundId = refundData.refund_id;
+      const refundAmount = refundData.refund_amount;
+      const refundStatus = refundData.refund_status;
+
+      if (refundId) {
+        // Update booking with refund details
+        await supabase
+          .from('bookings')
+          .update({
+            refund_id: refundId,
+            refund_status: refundStatus === 'SUCCESS' ? 'processed' : 'initiated',
+            refund_amount: refundAmount ? refundAmount / 100 : null, // Convert from paise to rupees
+            refund_processed_at: refundStatus === 'SUCCESS' ? new Date().toISOString() : null,
+            payment_status: refundStatus === 'SUCCESS' ? 'refunded' : 'paid',
+            cashfree_refund_data: {
+              refund: refundData,
+              received_at: new Date().toISOString()
+            }
+          })
+          .eq('cashfree_order_id', orderId);
+
+        // Update payment record
+        const { data: payment } = await supabase
+          .from('payments')
+          .select('*')
+          .eq('cashfree_order_id', orderId)
+          .single();
+
+        if (payment) {
+          const newRefundAmount = (payment.refund_amount || 0) + (refundAmount || 0);
+          const newRefundStatus = newRefundAmount >= payment.amount ? 'full' : 'partial';
+          
+          await supabase
+            .from('payments')
+            .update({
+              refund_status: newRefundStatus,
+              refund_amount: newRefundAmount,
+              refund_ids: [...(payment.refund_ids || []), refundId],
+              status: newRefundStatus === 'full' ? 'refunded' : 'partially_refunded'
+            })
+            .eq('cashfree_payment_id', paymentId);
+        }
       }
     }
 
@@ -438,7 +762,7 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
 // Cancel booking and initiate refund
 router.post('/cancel-booking/:booking_id', async (req, res) => {
   try {
-    if (!isRazorpayConfigured()) {
+    if (!isCashfreeConfigured()) {
       return res.status(503).json({
         success: false,
         message: 'Payment gateway is not configured. Please contact administrator.'
@@ -476,21 +800,40 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
       });
     }
 
-    // Initiate refund via Razorpay
+    // Initiate refund via Cashfree
     try {
-      const refund = await razorpay.payments.refund(booking.razorpay_payment_id, {
-        amount: Math.round(booking.amount * 100), // Convert to paise
-        notes: {
-          reason: reason || 'Customer requested cancellation',
-          booking_id: booking_id
-        }
-      });
+      const orderId = booking.cashfree_order_id || booking.razorpay_order_id;
+      if (!orderId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Order ID not found for refund'
+        });
+      }
+
+      // Cashfree expects amount in paise (smallest currency unit)
+      // booking.amount is in rupees, so convert to paise
+      const refundAmountInPaise = Math.round(booking.amount * 100);
+      
+      const refundData = {
+        refund_amount: refundAmountInPaise,
+        refund_id: `REF-${orderId}-${Date.now()}`,
+        refund_note: reason || 'Customer requested cancellation',
+        refund_type: 'MERCHANT_INITIATED'
+      };
+
+      const refundResponse = await axios.post(
+        `${CASHFREE_API_URL}/orders/${orderId}/refunds`,
+        refundData,
+        { headers: getCashfreeHeaders() }
+      );
+
+      const refund = refundResponse.data;
 
       // Update booking with refund details
-      const { error: updateError } = await supabase
+      const updateResult = await supabase
         .from('bookings')
         .update({
-          refund_id: refund.id,
+          refund_id: refund.refund_id,
           refund_status: 'initiated',
           refund_amount: booking.amount,
           refund_reason: reason || 'Customer requested cancellation',
@@ -498,6 +841,8 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
           status: 'cancelled'
         })
         .eq('id', booking_id);
+      
+      const updateError = updateResult.error;
 
       if (updateError) {
         console.error('Error updating booking:', updateError);
@@ -517,14 +862,14 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
       res.json({
         success: true,
         message: 'Refund initiated successfully',
-        refund_id: refund.id,
+        refund_id: refund.refund_id,
         booking: updatedBooking
       });
     } catch (refundError) {
       console.error('Error initiating refund:', refundError);
       return res.status(500).json({
         success: false,
-        message: refundError.message || 'Failed to initiate refund'
+        message: refundError.response?.data?.message || refundError.message || 'Failed to initiate refund'
       });
     }
   } catch (error) {
@@ -539,7 +884,7 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
 // Update booking date/time
 router.post('/update-booking/:booking_id', async (req, res) => {
   try {
-    if (!isRazorpayConfigured()) {
+    if (!isCashfreeConfigured()) {
       return res.status(503).json({
         success: false,
         message: 'Payment gateway is not configured. Please contact administrator.'
@@ -578,7 +923,7 @@ router.post('/update-booking/:booking_id', async (req, res) => {
     }
 
     let balanceAmount = 0;
-    let razorpayOrderId = null;
+    let cashfreeOrderId = null;
     let needsPayment = false;
 
     // Check if activity changed and calculate balance
@@ -590,50 +935,91 @@ router.post('/update-booking/:booking_id', async (req, res) => {
       if (balanceAmount > 0) {
         // Need to collect balance payment
         needsPayment = true;
-        const amountInPaise = Math.round(balanceAmount * 100);
         
-        // Generate receipt ID
+        // Generate order ID for balance payment
         const timestamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
         const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-        const receiptId = `KH-BAL-${timestamp}-${random}`;
+        const balanceOrderId = `KH-BAL-${timestamp}-${random}`;
 
+        // Cashfree requires HTTPS URLs
+        let frontendUrl = process.env.FRONTEND_URL || 'https://www.knowhowindia.in';
+        if (frontendUrl.includes('localhost') || frontendUrl.includes('127.0.0.1')) {
+          frontendUrl = 'https://www.knowhowindia.in';
+        }
+        if (!frontendUrl.startsWith('https://')) {
+          frontendUrl = frontendUrl.replace(/^http:\/\//, 'https://');
+        }
+        const returnUrl = `${frontendUrl}/payment-processing?order_id=${balanceOrderId}&type=booking`;
+
+        // Create Cashfree payment session for balance payment
+        const paymentSessionData = {
+          order_id: balanceOrderId,
+          order_amount: balanceAmount,
+          order_currency: 'INR',
+          customer_details: {
+            customer_id: booking.user_id || booking.user_email,
+            customer_name: booking.user_name,
+            customer_email: booking.user_email,
+            customer_phone: booking.user_phone,
+          },
+          order_meta: {
+            return_url: returnUrl,
+            payment_methods: 'cc,dc,upi,nb' // cc=credit card, dc=debit card, upi=UPI, nb=netbanking
+          },
+          order_note: `Balance payment for booking ${booking_id}`
+        };
+
+        let sessionResponse;
         try {
-          // Create Razorpay order for balance payment
-          const razorpayOrder = await razorpay.orders.create({
-            amount: amountInPaise,
-            currency: 'INR',
-            receipt: receiptId,
-            notes: {
-              booking_id: booking_id,
-              type: 'balance_payment',
-              original_amount: oldPrice,
-              new_amount: newPrice,
-              balance: balanceAmount
-            }
-          });
-
-          razorpayOrderId = razorpayOrder.id;
-        } catch (razorpayError) {
-          console.error('Error creating Razorpay order for balance:', razorpayError);
+          sessionResponse = await axios.post(
+            `${CASHFREE_API_URL}/orders`,
+            paymentSessionData,
+            { headers: getCashfreeHeaders() }
+          );
+          
+          // Get payment_session_id from response
+          const paymentSessionId = sessionResponse.data?.payment_session_id || sessionResponse.data?.data?.payment_session_id;
+          if (!paymentSessionId) {
+            throw new Error('Payment session ID not received from Cashfree');
+          }
+          
+          cashfreeOrderId = balanceOrderId;
+        } catch (cfError) {
+          console.error('=== Cashfree API Error (Balance Payment) ===');
+          console.error('Status:', cfError.response?.status);
+          console.error('Response Data:', JSON.stringify(cfError.response?.data, null, 2));
+          console.error('============================================');
+          
+          const errorMessage = cfError.response?.data?.message || cfError.message || 'Failed to create payment session';
           return res.status(500).json({
             success: false,
-            message: 'Failed to create payment order for balance amount'
+            message: errorMessage,
+            error: errorMessage
           });
         }
       } else if (balanceAmount < 0) {
         // Refund excess amount
         const refundAmount = Math.abs(balanceAmount);
-        try {
-          await razorpay.payments.refund(booking.razorpay_payment_id, {
-            amount: Math.round(refundAmount * 100),
-            notes: {
-              reason: 'Activity change - excess amount refund',
-              booking_id: booking_id
-            }
-          });
-        } catch (refundError) {
-          console.error('Error refunding excess amount:', refundError);
-          // Continue with update even if refund fails
+        const orderId = booking.cashfree_order_id || booking.razorpay_order_id;
+        
+        if (orderId) {
+          try {
+            const refundData = {
+              refund_amount: refundAmount,
+              refund_id: `REF-${orderId}-${Date.now()}`,
+              refund_note: 'Activity change - excess amount refund',
+              refund_type: 'MERCHANT_INITIATED'
+            };
+
+            await axios.post(
+              `${CASHFREE_API_URL}/orders/${orderId}/refunds`,
+              refundData,
+              { headers: getCashfreeHeaders() }
+            );
+          } catch (refundError) {
+            console.error('Error refunding excess amount:', refundError);
+            // Continue with update even if refund fails
+          }
         }
       }
     }
@@ -656,8 +1042,8 @@ router.post('/update-booking/:booking_id', async (req, res) => {
       }
     }
 
-    if (razorpayOrderId) {
-      updateData.balance_payment_order_id = razorpayOrderId;
+    if (cashfreeOrderId) {
+      updateData.balance_payment_order_id = cashfreeOrderId;
       updateData.balance_amount = balanceAmount;
     }
 
@@ -682,7 +1068,7 @@ router.post('/update-booking/:booking_id', async (req, res) => {
       booking: updatedBooking,
       needs_payment: needsPayment,
       balance_amount: balanceAmount,
-      razorpay_order_id: razorpayOrderId
+      cashfree_order_id: cashfreeOrderId
     });
   } catch (error) {
     console.error('Error updating booking:', error);
@@ -891,4 +1277,3 @@ router.get('/available-slots', async (req, res) => {
 });
 
 export default router;
-

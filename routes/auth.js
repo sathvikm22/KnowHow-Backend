@@ -820,12 +820,34 @@ const getFrontendUrl = (reqOrigin = null) => {
 
 const FRONTEND_URL_DEFAULT = getFrontendUrl();
 
-const BACKEND_URL = removeTrailingSlash(
-  process.env.BACKEND_URL || 
-  (process.env.NODE_ENV === 'production' 
-    ? 'https://knowhow-backend-d2gs.onrender.com' 
-    : 'http://localhost:3000')
-);
+// Determine backend URL - prioritize environment variable, then detect production
+const getBackendUrl = () => {
+  // If explicitly set, use it
+  if (process.env.BACKEND_URL) {
+    return removeTrailingSlash(process.env.BACKEND_URL);
+  }
+  
+  // Detect production environment
+  const isProduction = 
+    process.env.NODE_ENV === 'production' ||
+    process.env.RENDER || // Render sets this automatically
+    process.env.VERCEL || // Vercel sets this
+    !process.env.NODE_ENV; // If not set, assume production for safety
+  
+  if (isProduction) {
+    return 'https://knowhow-backend-d2gs.onrender.com';
+  }
+  
+  return 'http://localhost:3000';
+};
+
+const BACKEND_URL = getBackendUrl();
+
+// Log backend URL on startup
+console.log('🔧 Backend URL Configuration:');
+console.log('   BACKEND_URL:', BACKEND_URL);
+console.log('   NODE_ENV:', process.env.NODE_ENV || 'not set');
+console.log('   RENDER:', process.env.RENDER || 'not set');
 
 // Google OAuth - Initiate (redirects to Google)
 router.get('/google', (req, res) => {
@@ -855,14 +877,29 @@ router.get('/google', (req, res) => {
 
     const redirectUri = `${BACKEND_URL}/api/auth/google/callback`;
     
-    // Validate BACKEND_URL is set correctly
-    if (!BACKEND_URL || (BACKEND_URL.includes('localhost') && process.env.NODE_ENV === 'production')) {
-      console.error('❌ Google OAuth Error: BACKEND_URL is not set correctly for production');
+    // Validate BACKEND_URL is set correctly - NEVER use localhost in production
+    if (!BACKEND_URL || BACKEND_URL.includes('localhost')) {
+      console.error('❌ Google OAuth Error: BACKEND_URL is using localhost!');
       console.error('   Current BACKEND_URL:', BACKEND_URL);
-      console.error('   NODE_ENV:', process.env.NODE_ENV);
+      console.error('   NODE_ENV:', process.env.NODE_ENV || 'not set');
+      console.error('   RENDER:', process.env.RENDER || 'not set');
+      console.error('   Forcing production URL...');
+      
+      // Force production URL if localhost detected
+      const productionBackendUrl = 'https://knowhow-backend-d2gs.onrender.com';
+      const productionRedirectUri = `${productionBackendUrl}/api/auth/google/callback`;
+      
+      console.error('   Using production URL:', productionRedirectUri);
+      
+      // Still return error to force environment variable setup
       return res.status(500).json({
         success: false,
-        message: 'Backend URL is not configured correctly. Please set BACKEND_URL environment variable.'
+        message: 'Backend URL is not configured correctly. Please set BACKEND_URL=https://knowhow-backend-d2gs.onrender.com in Render environment variables.',
+        debug: {
+          currentBackendUrl: BACKEND_URL,
+          expectedBackendUrl: productionBackendUrl,
+          redirectUri: productionRedirectUri
+        }
       });
     }
     
@@ -911,15 +948,24 @@ router.get('/google', (req, res) => {
     // Store frontend URL in state parameter for callback
     const state = Buffer.from(JSON.stringify({ frontendUrl })).toString('base64');
     
-    console.log('✅ Google OAuth Initiated:', {
-      redirectUri,
-      backendUrl: BACKEND_URL,
-      frontendUrl: frontendUrl,
-      requestOrigin: requestOrigin || 'none',
-      clientId: GOOGLE_CLIENT_ID ? GOOGLE_CLIENT_ID.substring(0, 20) + '...' : 'NOT SET',
-      redirectUriForGoogle: redirectUri,
-      note: 'Make sure this redirectUri is added to Google Cloud Console Authorized redirect URIs'
-    });
+    console.log('✅ Google OAuth Initiated:');
+    console.log('   redirectUri (for Google):', redirectUri);
+    console.log('   backendUrl:', BACKEND_URL);
+    console.log('   frontendUrl:', frontendUrl);
+    console.log('   requestOrigin:', requestOrigin || 'none');
+    console.log('   clientId:', GOOGLE_CLIENT_ID ? GOOGLE_CLIENT_ID.substring(0, 20) + '...' : 'NOT SET');
+    console.log('   ⚠️  IMPORTANT: Make sure this redirectUri is in Google Cloud Console:', redirectUri);
+    
+    // Double-check redirect URI is not localhost
+    if (redirectUri.includes('localhost')) {
+      console.error('❌ CRITICAL ERROR: Redirect URI contains localhost!');
+      console.error('   This will cause OAuth to fail. Setting BACKEND_URL environment variable is required.');
+      return res.status(500).json({
+        success: false,
+        message: 'OAuth configuration error: Backend URL must be set to production URL. Please set BACKEND_URL=https://knowhow-backend-d2gs.onrender.com in Render.',
+        redirectUri: redirectUri
+      });
+    }
 
     const scope = 'openid email profile';
     const responseType = 'code';
