@@ -998,27 +998,69 @@ router.post('/update-booking/:booking_id', async (req, res) => {
           });
         }
       } else if (balanceAmount < 0) {
-        // Refund excess amount
-        const refundAmount = Math.abs(balanceAmount);
+        // Refund excess amount - but check if already refunded
+        const excessAmount = Math.abs(balanceAmount);
         const orderId = booking.cashfree_order_id || booking.razorpay_order_id;
         
         if (orderId) {
           try {
-            const refundData = {
-              refund_amount: refundAmount,
-              refund_id: `REF-${orderId}-${Date.now()}`,
-              refund_note: 'Activity change - excess amount refund',
-              refund_type: 'MERCHANT_INITIATED'
-            };
+            // Get payment record to check original amount and already refunded amount
+            const { data: payment } = await supabase
+              .from('payments')
+              .select('amount, refund_amount')
+              .eq('cashfree_order_id', orderId)
+              .single();
 
-            await axios.post(
-              `${CASHFREE_API_URL}/orders/${orderId}/refunds`,
-              refundData,
-              { headers: getCashfreeHeaders() }
-            );
+            if (payment) {
+              // Calculate refundable amount
+              // payment.amount is in paise, refund_amount is also in paise
+              const originalAmountInPaise = payment.amount || 0;
+              const alreadyRefundedInPaise = payment.refund_amount || 0;
+              const refundableAmountInPaise = originalAmountInPaise - alreadyRefundedInPaise;
+              
+              // Convert excess amount to paise
+              const excessAmountInPaise = Math.round(excessAmount * 100);
+              
+              // Only refund if there's refundable amount available and excess is within refundable limit
+              if (refundableAmountInPaise > 0 && excessAmountInPaise <= refundableAmountInPaise) {
+                const refundData = {
+                  refund_amount: excessAmountInPaise,
+                  refund_id: `REF-${orderId}-${Date.now()}`,
+                  refund_note: 'Activity change - excess amount refund',
+                  refund_type: 'MERCHANT_INITIATED'
+                };
+
+                await axios.post(
+                  `${CASHFREE_API_URL}/orders/${orderId}/refunds`,
+                  refundData,
+                  { headers: getCashfreeHeaders() }
+                );
+                console.log(`Refunded ${excessAmountInPaise} paise (${excessAmount} rupees) for booking update`);
+              } else {
+                console.warn(`Cannot refund excess amount: refundable=${refundableAmountInPaise} paise, requested=${excessAmountInPaise} paise`);
+                // Don't throw error, just log warning and continue with update
+              }
+            } else {
+              // No payment record found, try to refund anyway (legacy support)
+              const refundData = {
+                refund_amount: Math.round(excessAmount * 100), // Convert to paise
+                refund_id: `REF-${orderId}-${Date.now()}`,
+                refund_note: 'Activity change - excess amount refund',
+                refund_type: 'MERCHANT_INITIATED'
+              };
+
+              await axios.post(
+                `${CASHFREE_API_URL}/orders/${orderId}/refunds`,
+                refundData,
+                { headers: getCashfreeHeaders() }
+              );
+            }
           } catch (refundError) {
             console.error('Error refunding excess amount:', refundError);
-            // Continue with update even if refund fails
+            const errorMessage = refundError.response?.data?.message || refundError.message;
+            console.error('Refund error details:', errorMessage);
+            // Continue with update even if refund fails - don't block the booking update
+            // The error will be logged but won't prevent the booking from being updated
           }
         }
       }
