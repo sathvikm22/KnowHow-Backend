@@ -810,40 +810,75 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
         });
       }
 
-      // Get payment record to check original amount and already refunded amount
-      const { data: payment } = await supabase
-        .from('payments')
-        .select('amount, refund_amount, refund_status, refund_ids, cashfree_payment_id')
-        .eq('cashfree_order_id', orderId)
-        .single();
-
-      let refundAmountInPaise;
+      // First, fetch order details from Cashfree to get the actual transaction amount
+      let orderDetails = null;
+      let originalAmountInPaise = 0;
+      let alreadyRefundedInPaise = 0;
       
-      if (payment) {
-        // Calculate refundable amount
-        // payment.amount is in paise, refund_amount is also in paise
-        const originalAmountInPaise = payment.amount || 0;
-        const alreadyRefundedInPaise = payment.refund_amount || 0;
-        const refundableAmountInPaise = originalAmountInPaise - alreadyRefundedInPaise;
+      try {
+        const orderResponse = await axios.get(
+          `${CASHFREE_API_URL}/orders/${orderId}`,
+          { headers: getCashfreeHeaders() }
+        );
+        orderDetails = orderResponse.data;
         
-        if (refundableAmountInPaise <= 0) {
-          return res.status(400).json({
-            success: false,
-            message: 'No refundable amount available. This booking may have already been fully refunded.'
-          });
+        // Get order amount from Cashfree (in paise)
+        originalAmountInPaise = orderDetails.order_amount || 0;
+        
+        // Get existing refunds from Cashfree
+        try {
+          const refundsResponse = await axios.get(
+            `${CASHFREE_API_URL}/orders/${orderId}/refunds`,
+            { headers: getCashfreeHeaders() }
+          );
+          
+          const refunds = refundsResponse.data.refunds || [];
+          // Sum up all existing refund amounts
+          alreadyRefundedInPaise = refunds.reduce((sum, refund) => {
+            return sum + (refund.refund_amount || 0);
+          }, 0);
+          
+          console.log(`Order ${orderId}: Original amount = ${originalAmountInPaise} paise, Already refunded = ${alreadyRefundedInPaise} paise`);
+        } catch (refundsError) {
+          console.warn('Could not fetch existing refunds from Cashfree:', refundsError.message);
+          // Continue with 0 already refunded
         }
+      } catch (orderError) {
+        console.error('Error fetching order details from Cashfree:', orderError.response?.data || orderError.message);
         
-        // Refund the full refundable amount
-        refundAmountInPaise = refundableAmountInPaise;
+        // Fallback: Try to get from payment record
+        const { data: payment } = await supabase
+          .from('payments')
+          .select('amount, refund_amount')
+          .eq('cashfree_order_id', orderId)
+          .single();
         
-        console.log(`Refunding ${refundAmountInPaise} paise (${refundAmountInPaise / 100} rupees) out of original ${originalAmountInPaise} paise (${originalAmountInPaise / 100} rupees)`);
-      } else {
-        // No payment record found, use booking amount (fallback for legacy bookings)
-        // Cashfree expects amount in paise (smallest currency unit)
-        // booking.amount is in rupees, so convert to paise
-        refundAmountInPaise = Math.round(booking.amount * 100);
-        console.log(`No payment record found, using booking amount: ${refundAmountInPaise} paise`);
+        if (payment) {
+          originalAmountInPaise = payment.amount || 0;
+          alreadyRefundedInPaise = payment.refund_amount || 0;
+          console.log(`Using payment record: Original = ${originalAmountInPaise} paise, Already refunded = ${alreadyRefundedInPaise} paise`);
+        } else {
+          // Last resort: use booking amount
+          originalAmountInPaise = Math.round(booking.amount * 100);
+          console.log(`Using booking amount as fallback: ${originalAmountInPaise} paise`);
+        }
       }
+
+      // Calculate refundable amount
+      const refundableAmountInPaise = originalAmountInPaise - alreadyRefundedInPaise;
+      
+      if (refundableAmountInPaise <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'No refundable amount available. This booking may have already been fully refunded.'
+        });
+      }
+      
+      // Refund the full refundable amount
+      const refundAmountInPaise = refundableAmountInPaise;
+      
+      console.log(`Calculated refundable amount: ${refundAmountInPaise} paise (${refundAmountInPaise / 100} rupees)`);
+      console.log(`Original: ${originalAmountInPaise} paise, Already refunded: ${alreadyRefundedInPaise} paise, Refundable: ${refundAmountInPaise} paise`);
       
       const refundData = {
         refund_amount: refundAmountInPaise,
@@ -890,11 +925,17 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
       }
 
       // Update payment record with refund details if payment record exists
-      if (payment) {
-        const newRefundAmount = (payment.refund_amount || 0) + refundAmountInPaise;
-        const newRefundStatus = newRefundAmount >= payment.amount ? 'full' : 'partial';
+      const { data: paymentRecord } = await supabase
+        .from('payments')
+        .select('refund_amount, refund_ids, cashfree_payment_id, amount')
+        .eq('cashfree_order_id', orderId)
+        .single();
+      
+      if (paymentRecord) {
+        const newRefundAmount = (paymentRecord.refund_amount || 0) + refundAmountInPaise;
+        const newRefundStatus = newRefundAmount >= (paymentRecord.amount || originalAmountInPaise) ? 'full' : 'partial';
         
-        const existingRefundIds = Array.isArray(payment.refund_ids) ? payment.refund_ids : [];
+        const existingRefundIds = Array.isArray(paymentRecord.refund_ids) ? paymentRecord.refund_ids : [];
         const updatedRefundIds = [...existingRefundIds, refund.refund_id];
         
         await supabase
@@ -905,7 +946,7 @@ router.post('/cancel-booking/:booking_id', async (req, res) => {
             refund_ids: updatedRefundIds,
             status: newRefundStatus === 'full' ? 'refunded' : 'partially_refunded'
           })
-          .eq('cashfree_payment_id', payment.cashfree_payment_id);
+          .eq('cashfree_payment_id', paymentRecord.cashfree_payment_id);
       }
 
       // Return booking data for receipt generation
