@@ -1270,7 +1270,7 @@ router.get('/available-slots', async (req, res) => {
                  bookingActivity.includes(searchActivity) ||
                  searchActivity.includes(bookingActivity);
         })
-        .map((b: any) => ({ booking_time_slot: b.booking_time_slot }));
+        .map(b => ({ booking_time_slot: b.booking_time_slot }));
     }
 
     if (error) {
@@ -1281,7 +1281,7 @@ router.get('/available-slots', async (req, res) => {
       });
     }
 
-    const bookedTimeSlots = bookedSlots?.map((b: any) => b.booking_time_slot) || [];
+    const bookedTimeSlots = bookedSlots?.map(b => b.booking_time_slot) || [];
     const availableSlots = timeSlots.filter(slot => !bookedTimeSlots.includes(slot));
     
     console.log('Booked slots:', bookedTimeSlots);
