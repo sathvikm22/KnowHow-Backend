@@ -274,6 +274,22 @@ router.post('/signup/complete', async (req, res) => {
     // Generate JWT token
     const token = generateToken(newUser.id, newUser.email);
 
+    // Check if user has accepted cookies (new users won't have consent yet, so don't set cookie)
+    // Cookie will be set later when user accepts cookies
+    const cookieConsent = newUser.cookie_consent;
+    const shouldSetCookie = cookieConsent === 'accepted';
+
+    // Set HTTP-only cookie only if user has accepted cookies
+    if (shouldSetCookie) {
+      const isProduction = process.env.NODE_ENV === 'production';
+      res.cookie('token', token, {
+        httpOnly: true,
+        secure: isProduction, // Use secure cookies in production (HTTPS)
+        sameSite: 'lax',
+        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+      });
+    }
+
     res.json({ 
       success: true, 
       message: 'Account created successfully',
@@ -282,7 +298,7 @@ router.post('/signup/complete', async (req, res) => {
         email: newUser.email,
         name: newUser.name
       },
-      token
+      token // Always return token in response (for in-memory storage if no consent)
     });
   } catch (error) {
     console.error('Error in complete-signup:', error);
@@ -344,6 +360,21 @@ router.post('/login', async (req, res) => {
     // Check if user is admin (knowhowcafe2025@gmail.com)
     const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
 
+    // Check if user has accepted cookies
+    const cookieConsent = user.cookie_consent;
+    const shouldSetCookie = cookieConsent === 'accepted';
+
+    // Set HTTP-only cookie only if user has accepted cookies
+    if (shouldSetCookie) {
+      const isProduction = process.env.NODE_ENV === 'production';
+      res.cookie('token', token, {
+        httpOnly: true,
+        secure: isProduction, // Use secure cookies in production (HTTPS)
+        sameSite: 'lax',
+        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+      });
+    }
+
     res.json({ 
       success: true, 
       message: 'Login successful',
@@ -352,7 +383,7 @@ router.post('/login', async (req, res) => {
         email: user.email,
         name: user.name
       },
-      token,
+      token, // Always return token in response (for in-memory storage if no consent)
       isAdmin
     });
   } catch (error) {
@@ -631,18 +662,26 @@ router.post('/forgot-password/reset', async (req, res) => {
 });
 
 // Get current user (verify token and return user info)
+// Supports both cookie-based and header-based authentication
 router.get('/me', async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
+    // Try to get token from cookie first (for cookie-based auth)
+    let token = req.cookies?.token;
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    // If not in cookie, try Authorization header (for in-memory auth)
+    if (!token) {
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.split(' ')[1];
+      }
+    }
+    
+    if (!token) {
       return res.status(401).json({ 
         success: false, 
         message: 'No token provided' 
       });
     }
-
-    const token = authHeader.split(' ')[1];
     
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
@@ -760,9 +799,15 @@ router.get('/all-users', async (req, res) => {
 // Logout (client-side token removal, but endpoint for consistency)
 router.post('/logout', async (req, res) => {
   try {
-    // Since we're using JWT tokens stored client-side,
-    // logout is mainly handled by removing the token on the client.
-    // This endpoint can be used for server-side session cleanup if needed.
+    const isProduction = process.env.NODE_ENV === 'production';
+    
+    // Clear the auth cookie
+    res.clearCookie('token', {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'lax'
+    });
+    
     res.json({ 
       success: true, 
       message: 'Logged out successfully' 
@@ -1339,6 +1384,20 @@ router.post('/cookie-consent', async (req, res) => {
 
     const userEmail = decoded.email;
 
+    // Get user to check if they have a token
+    const { data: user, error: userFetchError } = await supabase
+      .from('users')
+      .select('id, email, cookie_consent')
+      .eq('email', userEmail.toLowerCase())
+      .single();
+
+    if (userFetchError || !user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
     // Update user's cookie consent status
     const { data: updatedUser, error: updateError } = await supabase
       .from('users')
@@ -1355,6 +1414,29 @@ router.post('/cookie-consent', async (req, res) => {
       return res.status(500).json({
         success: false,
         message: 'Failed to update cookie consent'
+      });
+    }
+
+    const isProduction = process.env.NODE_ENV === 'production';
+
+    // If user accepts cookies and has a token, set the auth cookie
+    if (consent === 'accepted') {
+      // Generate a new token for the user
+      const authToken = generateToken(user.id, user.email);
+      
+      // Set HTTP-only cookie
+      res.cookie('token', authToken, {
+        httpOnly: true,
+        secure: isProduction, // Use secure cookies in production (HTTPS)
+        sameSite: 'lax',
+        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+      });
+    } else if (consent === 'declined') {
+      // Clear the auth cookie if user declines
+      res.clearCookie('token', {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: 'lax'
       });
     }
 
