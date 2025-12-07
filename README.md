@@ -4,10 +4,7 @@ A robust Node.js/Express backend API for Know How Cafe, a creative workshop and 
 
 ## 🚀 Live Deployment
 
-- **Production URL**: `https://knowhow-backend-d2gs.onrender.com`
-- **Health Check**: `https://knowhow-backend-d2gs.onrender.com/health`
-- **API Base**: `https://knowhow-backend-d2gs.onrender.com/api`
-- **Hosting**: Render (Free Tier)
+- **Hosting**: Render 
 - **Custom Domain**: Configured via Render DNS settings
 
 ## 📋 Table of Contents
