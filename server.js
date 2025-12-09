@@ -5,6 +5,8 @@ import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth.js';
 import paymentRoutes from './routes/payments.js';
 import orderRoutes from './routes/orders.js';
+import addonsRoutes from './routes/addons.js';
+import uploadRoutes from './routes/upload.js';
 
 dotenv.config();
 
@@ -52,8 +54,9 @@ const corsOptions = {
 // Middleware
 app.use(cors(corsOptions));
 app.use(cookieParser());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Increase body parser limit to handle base64 image uploads (10MB)
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Trust proxy (important for Render)
 app.set('trust proxy', true);
@@ -91,6 +94,8 @@ app.head('/', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api', paymentRoutes);
 app.use('/api', orderRoutes);
+app.use('/api/addons', addonsRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // Log available routes on startup
 console.log('📋 Registered API routes:');
@@ -107,6 +112,8 @@ console.log('   POST /api/cancel-booking/:booking_id - Cancel booking and refund
 console.log('   POST /api/update-booking/:booking_id - Update booking');
 console.log('   GET  /api/my-bookings - Get user bookings');
 console.log('   GET  /api/available-slots - Get available slots');
+console.log('   GET  /api/addons/activities - Get all activities');
+console.log('   GET  /api/addons/diy-kits - Get all DIY kits');
 
 // Error handler
 app.use((err, req, res, next) => {
