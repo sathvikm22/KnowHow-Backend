@@ -371,7 +371,10 @@ router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    console.log('🔐 Login attempt for:', email);
+
     if (!email || !password) {
+      console.warn('⚠️  Missing email or password');
       return res.status(400).json({ 
         success: false, 
         message: 'Email and password are required' 
@@ -385,19 +388,58 @@ router.post('/login', async (req, res) => {
       .eq('email', email.toLowerCase())
       .single();
 
-    if (userError || !user) {
+    if (userError) {
+      console.error('❌ Database error fetching user:', userError);
+      // Don't reveal if user exists or not (security)
       return res.status(401).json({ 
         success: false, 
         message: 'Invalid email or password' 
       });
     }
 
-    // Verify password
-    const isPasswordValid = await comparePassword(password, user.password);
-    if (!isPasswordValid) {
+    if (!user) {
+      console.warn('⚠️  User not found:', email.toLowerCase());
       return res.status(401).json({ 
         success: false, 
         message: 'Invalid email or password' 
+      });
+    }
+
+    console.log('✅ User found:', user.email, 'ID:', user.id);
+    console.log('🔍 Checking password...');
+    console.log('   Has password field:', !!user.password);
+    console.log('   Password field type:', typeof user.password);
+    console.log('   Password field length:', user.password?.length);
+
+    // Verify password
+    try {
+      const isPasswordValid = await comparePassword(password, user.password);
+      console.log('🔐 Password comparison result:', isPasswordValid);
+      
+      if (!isPasswordValid) {
+        console.warn('⚠️  Invalid password for user:', user.email);
+        return res.status(401).json({ 
+          success: false, 
+          message: 'Invalid email or password' 
+        });
+      }
+    } catch (compareError) {
+      console.error('❌ Error comparing password:', compareError);
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid email or password' 
+      });
+    }
+
+    console.log('✅ Password verified successfully');
+
+    // Check if user has a valid password hash (OAuth users might have random passwords)
+    // If password field is missing or empty, user might be OAuth-only
+    if (!user.password || user.password.trim() === '') {
+      console.warn('⚠️  User has no password set - might be OAuth-only user');
+      return res.status(401).json({ 
+        success: false, 
+        message: 'This account was created with Google. Please use "Sign in with Google" instead.' 
       });
     }
 
