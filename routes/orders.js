@@ -520,31 +520,25 @@ router.get('/all-diy-orders', async (req, res) => {
       });
     }
 
-      // Get all orders
-      const { data: orders, error } = await supabase
-        .from('orders')
-        .select('*')
-        .eq('status', 'paid')
-        .order('created_at', { ascending: false });
+    // Get all orders
+    const { data: orders, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('status', 'paid')
+      .order('created_at', { ascending: false });
 
-      if (error) {
-        console.error('Error fetching orders:', error);
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to fetch orders'
-        });
-      }
-
-      res.json({
-        success: true,
-        orders: orders || []
-      });
-    } catch (jwtError) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid token' 
+    if (error) {
+      console.error('Error fetching orders:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch orders'
       });
     }
+
+    res.json({
+      success: true,
+      orders: orders || []
+    });
   } catch (error) {
     console.error('Error fetching orders:', error);
     res.status(500).json({
@@ -636,92 +630,92 @@ router.get('/check-diy-payment-status/:order_id', async (req, res) => {
   }
 });
 
-// Update delivery status (admin)
+// Update delivery status (admin) - uses cookie-based auth
 router.post('/update-delivery-status/:order_id', async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
+    // Only get token from HttpOnly cookie (secure by design)
+    const accessToken = req.cookies?.accessToken;
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!accessToken) {
       return res.status(401).json({ 
         success: false, 
         message: 'Authentication required' 
       });
     }
 
-    const token = authHeader.split(' ')[1];
+    // Use verifyAccessToken from generateToken utils (validates exp, iat, alg)
+    const { verifyAccessToken } = require('../utils/generateToken.js');
+    const decoded = verifyAccessToken(accessToken);
     
-    try {
-      const jwt = await import('jsonwebtoken');
-      const decoded = jwt.default.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production');
-      
-      // Get user to check if admin
-      const { data: user, error: userError } = await supabase
-        .from('users')
-        .select('email')
-        .eq('id', decoded.userId)
-        .maybeSingle();
-
-      if (userError || !user) {
-        return res.status(404).json({ 
-          success: false, 
-          message: 'User not found' 
-        });
-      }
-
-      // Check if admin (knowhowcafe2025@gmail.com)
-      const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
-      if (!isAdmin) {
-        return res.status(403).json({ 
-          success: false, 
-          message: 'Admin access required' 
-        });
-      }
-
-      const { order_id } = req.params;
-      const { delivery_status, delivery_time } = req.body;
-
-      if (!delivery_status) {
-        return res.status(400).json({
-          success: false,
-          message: 'Delivery status is required'
-        });
-      }
-
-      const updateData = {
-        delivery_status,
-        delivery_status_updated_at: new Date().toISOString()
-      };
-
-      if (delivery_time) {
-        updateData.delivery_time = delivery_time;
-      }
-
-      const { data: order, error } = await supabase
-        .from('orders')
-        .update(updateData)
-        .eq('id', order_id)
-        .select()
-        .single();
-
-      if (error) {
-        console.error('Error updating delivery status:', error);
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to update delivery status'
-        });
-      }
-
-      res.json({
-        success: true,
-        message: 'Delivery status updated successfully',
-        order: order
-      });
-    } catch (jwtError) {
+    if (!decoded) {
       return res.status(401).json({ 
         success: false, 
-        message: 'Invalid token' 
+        message: 'Invalid or expired token' 
       });
     }
+    
+    // Get user to check if admin
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('email')
+      .eq('id', decoded.userId)
+      .maybeSingle();
+
+    if (userError || !user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Check if admin (knowhowcafe2025@gmail.com)
+    const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
+    if (!isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+
+    const { order_id } = req.params;
+    const { delivery_status, delivery_time } = req.body;
+
+    if (!delivery_status) {
+      return res.status(400).json({
+        success: false,
+        message: 'Delivery status is required'
+      });
+    }
+
+    const updateData = {
+      delivery_status,
+      delivery_status_updated_at: new Date().toISOString()
+    };
+
+    if (delivery_time) {
+      updateData.delivery_time = delivery_time;
+    }
+
+    const { data: order, error } = await supabase
+      .from('orders')
+      .update(updateData)
+      .eq('id', order_id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error updating delivery status:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update delivery status'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Delivery status updated successfully',
+      order: order
+    });
   } catch (error) {
     console.error('Error updating delivery status:', error);
     res.status(500).json({
