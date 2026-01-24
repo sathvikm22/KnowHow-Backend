@@ -971,36 +971,23 @@ const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 // Remove trailing slashes to avoid issues
 const removeTrailingSlash = (url) => url ? url.replace(/\/+$/, '') : url;
 
-// Allowed frontend domains for production
+// Production frontend: www.knowhowindia.in only
 const ALLOWED_FRONTEND_DOMAINS = [
-  'https://know-how-frontend.vercel.app',
-  'https://www.know-how-frontend.vercel.app',
-  'https://know-how-frontend-rosy.vercel.app',
-  'https://www.know-how-frontend-rosy.vercel.app',
   'https://www.knowhowindia.in',
-  'https://knowhowindia.in'
+  'https://knowhowindia.in',
 ];
 
-// For Render backend: https://knowhow-backend-d2gs.onrender.com
-// For Vercel frontend: https://know-how-frontend.vercel.app, https://know-how-frontend-rosy.vercel.app, https://www.knowhowindia.in, https://knowhowindia.in
 const getFrontendUrl = (reqOrigin = null) => {
-  // If FRONTEND_URL is explicitly set, use it
   if (process.env.FRONTEND_URL) {
     return removeTrailingSlash(process.env.FRONTEND_URL);
   }
-  
-  // In production, try to use request origin if it's in allowed domains
   if (process.env.NODE_ENV === 'production' && reqOrigin) {
     const origin = removeTrailingSlash(reqOrigin);
-    if (ALLOWED_FRONTEND_DOMAINS.includes(origin)) {
-      return origin;
-    }
+    if (ALLOWED_FRONTEND_DOMAINS.includes(origin)) return origin;
   }
-  
-  // Default fallback
   return removeTrailingSlash(
-    process.env.NODE_ENV === 'production' 
-      ? 'https://knowhowindia.in' 
+    process.env.NODE_ENV === 'production'
+      ? 'https://www.knowhowindia.in'
       : 'http://localhost:8080'
   );
 };
@@ -1101,12 +1088,8 @@ router.get('/google', (req, res) => {
       if (ALLOWED_FRONTEND_DOMAINS.includes(queryFrontendUrl)) {
         frontendUrl = queryFrontendUrl;
         console.log('✅ Using frontend URL from query parameter:', frontendUrl);
-      } else if (!queryFrontendUrl.includes('localhost') && queryFrontendUrl.startsWith('https://')) {
-        // Allow any HTTPS production URL (more flexible)
-        frontendUrl = queryFrontendUrl;
-        console.log('✅ Using frontend URL from query parameter (production):', frontendUrl);
       } else {
-        console.warn('⚠️  Frontend URL from query not valid:', queryFrontendUrl);
+        console.warn('⚠️  Frontend URL from query not allowed (use www.knowhowindia.in):', queryFrontendUrl);
       }
     }
     

@@ -13,42 +13,43 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS configuration - Strict production-only origin
+// CORS: production = www.knowhowindia.in + knowhowindia.in only
+const PRODUCTION_ORIGINS = [
+  'https://www.knowhowindia.in',
+  'https://knowhowindia.in',
+];
+
 const corsOptions = {
   origin: function (origin, callback) {
-    // ✅ Allow requests with NO origin (Render health checks, Postman, curl)
     if (!origin) return callback(null, true);
 
-    // Production: Only allow knowhowindia.in
-    const allowedOrigins = process.env.NODE_ENV === 'production' 
-      ? [
-          'https://www.knowhowindia.in',
-          'https://knowhowindia.in'
-        ]
+    const isProduction = process.env.NODE_ENV === 'production';
+    const allowedOrigins = isProduction
+      ? [...PRODUCTION_ORIGINS]
       : [
-          // Local development only
           'http://localhost:8080',
           'http://localhost:5173',
           'http://localhost:3000',
           'http://127.0.0.1:8080',
           'http://127.0.0.1:5173',
-          'http://127.0.0.1:3000'
+          'http://127.0.0.1:3000',
         ];
 
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
+    const extra = (process.env.ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (extra.length) allowedOrigins.push(...extra);
 
+    if (allowedOrigins.includes(origin)) return callback(null, true);
     console.warn(`⚠️  CORS blocked origin: ${origin}`);
     return callback(new Error(`Not allowed by CORS: ${origin}`));
   },
 
-  credentials: true, // Required for HttpOnly cookies
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'X-Requested-With', 'Accept'],
-  // Removed 'Authorization' from allowedHeaders - we use cookies only
   exposedHeaders: ['Content-Type'],
-  // Removed 'Authorization' from exposedHeaders
 };
 
 // Security Headers Middleware
