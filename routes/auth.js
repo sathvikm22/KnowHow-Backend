@@ -17,46 +17,68 @@ import {
 const router = express.Router();
 
 // Helper function to set secure cookies
-const setAuthCookies = (res, userId, email) => {
-  const isProduction = process.env.NODE_ENV === 'production';
+const setAuthCookies = (res, userId, email, req = null) => {
+  // Detect production: Render sets RENDER env var, or check protocol
+  const isProduction = 
+    process.env.NODE_ENV === 'production' || 
+    !!process.env.RENDER ||
+    (req && req.protocol === 'https');
   
   // Generate tokens
   const accessToken = generateAccessToken({ userId, email });
   const refreshToken = generateRefreshToken(userId);
   
   // Cookie options for cross-origin requests (frontend on Vercel, backend on Render)
-  // sameSite: 'none' is required for cross-origin cookies
-  // secure: true is required when sameSite is 'none' (HTTPS only)
+  // sameSite: 'none' is REQUIRED for cross-origin cookies
+  // secure: true is REQUIRED when sameSite is 'none' (HTTPS only)
+  // Both frontend and backend must be HTTPS
   const cookieOptions = {
     httpOnly: true,
-    secure: true, // Always true in production (HTTPS required for sameSite: 'none')
-    sameSite: isProduction ? 'none' : 'lax', // 'none' for cross-origin, 'lax' for same-origin
+    secure: true, // Always true - required for sameSite: 'none'
+    sameSite: 'none', // Always 'none' for cross-origin (frontend and backend on different domains)
     maxAge: 10 * 60 * 1000, // 10 minutes for access token
     path: '/',
-    // Don't set domain - let browser handle it automatically
+    // CRITICAL: Do NOT set domain - let browser handle it automatically
+    // Setting domain can prevent cookies from working cross-origin
   };
+  
+  console.log('🍪 Setting cookies with options:', {
+    httpOnly: cookieOptions.httpOnly,
+    secure: cookieOptions.secure,
+    sameSite: cookieOptions.sameSite,
+    path: cookieOptions.path,
+    maxAge: cookieOptions.maxAge,
+    isProduction: isProduction,
+    NODE_ENV: process.env.NODE_ENV,
+    RENDER: process.env.RENDER,
+    protocol: req?.protocol
+  });
   
   // Set access token cookie (10 minutes)
   res.cookie('accessToken', accessToken, cookieOptions);
+  console.log('✅ accessToken cookie set (length:', accessToken.length, ')');
   
   // Set refresh token cookie (7 days) - same options but longer expiry
   res.cookie('refreshToken', refreshToken, {
     ...cookieOptions,
     maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
   });
+  console.log('✅ refreshToken cookie set (length:', refreshToken.length, ')');
+  
+  // Log Set-Cookie headers to verify they're being sent
+  const setCookieHeaders = res.getHeader('Set-Cookie');
+  console.log('📋 Set-Cookie headers:', Array.isArray(setCookieHeaders) ? setCookieHeaders.length : 'not array');
   
   return { accessToken, refreshToken };
 };
 
 // Helper function to clear auth cookies
 const clearAuthCookies = (res) => {
-  const isProduction = process.env.NODE_ENV === 'production';
-  
   // Use same options as setAuthCookies for clearing
   const cookieOptions = {
     httpOnly: true,
     secure: true, // Always true (required for sameSite: 'none')
-    sameSite: isProduction ? 'none' : 'lax',
+    sameSite: 'none', // Always 'none' for cross-origin
     path: '/'
   };
   
@@ -322,7 +344,7 @@ router.post('/signup/complete', async (req, res) => {
       });
 
     // Set secure HttpOnly cookies (always - no cookie consent needed for security)
-    setAuthCookies(res, newUser.id, newUser.email);
+    setAuthCookies(res, newUser.id, newUser.email, req);
 
     // DO NOT return tokens in response body (security best practice)
     res.json({ 
@@ -393,7 +415,9 @@ router.post('/login', async (req, res) => {
     const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
 
     // Set secure HttpOnly cookies (always - security requirement)
-    setAuthCookies(res, user.id, user.email);
+    console.log('🍪 Setting auth cookies for user:', user.email);
+    setAuthCookies(res, user.id, user.email, req);
+    console.log('✅ Auth cookies set successfully');
 
     // DO NOT return tokens in response body (security best practice)
     res.json({ 
@@ -863,7 +887,7 @@ router.post('/refresh', async (req, res) => {
     
     // Token rotation: Generate new access and refresh tokens
     // Old refresh token is invalidated by issuing a new one
-    setAuthCookies(res, user.id, user.email);
+    setAuthCookies(res, user.id, user.email, req);
     
     res.json({
       success: true,
@@ -1331,7 +1355,7 @@ router.get('/google/callback', async (req, res) => {
     const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
 
     // Set secure HttpOnly cookies (tokens in cookies, not URL)
-    setAuthCookies(res, user.id, user.email);
+    setAuthCookies(res, user.id, user.email, req);
 
     // Redirect to frontend WITHOUT tokens in URL (security)
     // Frontend will read user info from cookies via /me endpoint
@@ -1491,11 +1515,11 @@ router.post('/cookie-consent', async (req, res) => {
     // Cookie consent is for analytics/tracking, not authentication security
     if (consent === 'accepted') {
       // Set secure auth cookies
-      setAuthCookies(res, user.id, user.email);
+      setAuthCookies(res, user.id, user.email, req);
     } else if (consent === 'declined') {
       // Still set auth cookies for security, but user can opt out of tracking
       // Authentication cookies are essential for security
-      setAuthCookies(res, user.id, user.email);
+      setAuthCookies(res, user.id, user.email, req);
     }
 
     res.json({
