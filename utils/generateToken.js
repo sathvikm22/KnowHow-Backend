@@ -181,13 +181,13 @@ function authenticateToken(req, res, next) {
   next();
 }
 
+// Export all functions
 export {
   generateAccessToken,
   generateRefreshToken,
   verifyAccessToken,
   verifyRefreshToken,
   authenticateToken,
-  // Legacy exports for backward compatibility (will be removed)
   generateToken,
   verifyToken
 };
