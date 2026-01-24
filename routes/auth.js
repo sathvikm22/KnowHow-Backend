@@ -24,22 +24,25 @@ const setAuthCookies = (res, userId, email) => {
   const accessToken = generateAccessToken({ userId, email });
   const refreshToken = generateRefreshToken(userId);
   
-  // Set access token cookie (10 minutes)
-  res.cookie('accessToken', accessToken, {
+  // Cookie options for cross-origin requests (frontend on Vercel, backend on Render)
+  // sameSite: 'none' is required for cross-origin cookies
+  // secure: true is required when sameSite is 'none' (HTTPS only)
+  const cookieOptions = {
     httpOnly: true,
-    secure: isProduction, // HTTPS only in production
-    sameSite: 'lax',
-    maxAge: 10 * 60 * 1000, // 10 minutes
-    path: '/'
-  });
+    secure: true, // Always true in production (HTTPS required for sameSite: 'none')
+    sameSite: isProduction ? 'none' : 'lax', // 'none' for cross-origin, 'lax' for same-origin
+    maxAge: 10 * 60 * 1000, // 10 minutes for access token
+    path: '/',
+    // Don't set domain - let browser handle it automatically
+  };
   
-  // Set refresh token cookie (7 days)
+  // Set access token cookie (10 minutes)
+  res.cookie('accessToken', accessToken, cookieOptions);
+  
+  // Set refresh token cookie (7 days) - same options but longer expiry
   res.cookie('refreshToken', refreshToken, {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    path: '/'
+    ...cookieOptions,
+    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
   });
   
   return { accessToken, refreshToken };
@@ -49,19 +52,16 @@ const setAuthCookies = (res, userId, email) => {
 const clearAuthCookies = (res) => {
   const isProduction = process.env.NODE_ENV === 'production';
   
-  res.clearCookie('accessToken', {
+  // Use same options as setAuthCookies for clearing
+  const cookieOptions = {
     httpOnly: true,
-    secure: isProduction,
-    sameSite: 'lax',
+    secure: true, // Always true (required for sameSite: 'none')
+    sameSite: isProduction ? 'none' : 'lax',
     path: '/'
-  });
+  };
   
-  res.clearCookie('refreshToken', {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: 'lax',
-    path: '/'
-  });
+  res.clearCookie('accessToken', cookieOptions);
+  res.clearCookie('refreshToken', cookieOptions);
 };
 
 // Send OTP for signup
@@ -685,13 +685,25 @@ router.post('/forgot-password/reset', async (req, res) => {
 // Get current user (verify token from HttpOnly cookie)
 router.get('/me', async (req, res) => {
   try {
+    // Debug: Log cookies received
+    console.log('🔍 /me endpoint called');
+    console.log('   Cookies received:', Object.keys(req.cookies || {}));
+    console.log('   Has accessToken:', !!req.cookies?.accessToken);
+    console.log('   Request origin:', req.get('origin'));
+    console.log('   Request headers:', {
+      cookie: req.headers.cookie ? 'present' : 'missing',
+      origin: req.get('origin'),
+      referer: req.get('referer')
+    });
+    
     // Only get token from HttpOnly cookie (secure by design)
     const accessToken = req.cookies?.accessToken;
     
     if (!accessToken) {
+      console.warn('⚠️  No access token in cookies');
       return res.status(401).json({ 
         success: false, 
-        message: 'No token provided' 
+        message: 'No token provided. Please log in again.' 
       });
     }
     
@@ -809,12 +821,18 @@ router.get('/all-users', async (req, res) => {
 // Refresh token endpoint with rotation
 router.post('/refresh', async (req, res) => {
   try {
+    // Debug: Log cookies received
+    console.log('🔄 Refresh endpoint called');
+    console.log('   Cookies received:', Object.keys(req.cookies || {}));
+    console.log('   Has refreshToken:', !!req.cookies?.refreshToken);
+    
     const refreshToken = req.cookies?.refreshToken;
     
     if (!refreshToken) {
+      console.warn('⚠️  No refresh token in cookies');
       return res.status(401).json({
         success: false,
-        message: 'No refresh token provided'
+        message: 'No refresh token provided. Please log in again.'
       });
     }
     
