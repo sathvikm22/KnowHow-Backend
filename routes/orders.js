@@ -405,24 +405,28 @@ router.post('/verify-diy-payment', async (req, res) => {
   }
 });
 
-// Get user DIY orders
+// Get user DIY orders - uses cookie-based auth with email fallback
 router.get('/my-diy-orders', async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    // Try to get token from HttpOnly cookie first
+    const accessToken = req.cookies?.accessToken;
     let userId = null;
     let userEmail = null;
 
-    if (token) {
+    if (accessToken) {
       try {
-        const jwt = await import('jsonwebtoken');
-        const decoded = jwt.default.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production');
-        userId = decoded.userId;
-        userEmail = decoded.email;
+        const { verifyAccessToken } = require('../utils/generateToken.js');
+        const decoded = verifyAccessToken(accessToken);
+        if (decoded) {
+          userId = decoded.userId;
+          userEmail = decoded.email;
+        }
       } catch (err) {
         console.log('Token verification failed');
       }
     }
 
+    // If no token, try to get email from query (for guest orders lookup)
     if (!userId && !userEmail) {
       userEmail = req.query.email;
     }
@@ -469,46 +473,52 @@ router.get('/my-diy-orders', async (req, res) => {
   }
 });
 
-// Get all DIY orders (admin)
+// Get all DIY orders (admin) - uses cookie-based auth
 router.get('/all-diy-orders', async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
+    // Only get token from HttpOnly cookie (secure by design)
+    const accessToken = req.cookies?.accessToken;
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!accessToken) {
       return res.status(401).json({ 
         success: false, 
         message: 'Authentication required' 
       });
     }
 
-    const token = authHeader.split(' ')[1];
+    // Use verifyAccessToken from generateToken utils (validates exp, iat, alg)
+    const { verifyAccessToken } = require('../utils/generateToken.js');
+    const decoded = verifyAccessToken(accessToken);
     
-    try {
-      const jwt = await import('jsonwebtoken');
-      const decoded = jwt.default.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production');
-      
-      // Get user to check if admin
-      const { data: user, error: userError } = await supabase
-        .from('users')
-        .select('email')
-        .eq('id', decoded.userId)
-        .maybeSingle();
+    if (!decoded) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid or expired token' 
+      });
+    }
+    
+    // Get user to check if admin
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('email')
+      .eq('id', decoded.userId)
+      .maybeSingle();
 
-      if (userError || !user) {
-        return res.status(404).json({ 
-          success: false, 
-          message: 'User not found' 
-        });
-      }
+    if (userError || !user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
 
-      // Check if admin (knowhowcafe2025@gmail.com)
-      const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
-      if (!isAdmin) {
-        return res.status(403).json({ 
-          success: false, 
-          message: 'Admin access required' 
-        });
-      }
+    // Check if admin (knowhowcafe2025@gmail.com)
+    const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
+    if (!isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
 
       // Get all orders
       const { data: orders, error } = await supabase
