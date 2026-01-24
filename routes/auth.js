@@ -4,14 +4,64 @@ import { supabase } from '../config/supabase.js';
 import { sendOTPEmail } from '../config/brevo.js';
 import { generateOTP, isOTPExpired } from '../utils/otp.js';
 import { hashPassword, comparePassword } from '../utils/password.js';
-import jwt from 'jsonwebtoken';
+import { 
+  generateAccessToken, 
+  generateRefreshToken, 
+  verifyAccessToken, 
+  verifyRefreshToken 
+} from '../utils/generateToken.js';
+
+// Remove unused jwt import
+// import jwt from 'jsonwebtoken'; // No longer needed - using generateToken utils
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
-// Generate JWT token
-const generateToken = (userId, email) => {
-  return jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: '7d' });
+// Helper function to set secure cookies
+const setAuthCookies = (res, userId, email) => {
+  const isProduction = process.env.NODE_ENV === 'production';
+  
+  // Generate tokens
+  const accessToken = generateAccessToken({ userId, email });
+  const refreshToken = generateRefreshToken(userId);
+  
+  // Set access token cookie (10 minutes)
+  res.cookie('accessToken', accessToken, {
+    httpOnly: true,
+    secure: isProduction, // HTTPS only in production
+    sameSite: 'lax',
+    maxAge: 10 * 60 * 1000, // 10 minutes
+    path: '/'
+  });
+  
+  // Set refresh token cookie (7 days)
+  res.cookie('refreshToken', refreshToken, {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    path: '/'
+  });
+  
+  return { accessToken, refreshToken };
+};
+
+// Helper function to clear auth cookies
+const clearAuthCookies = (res) => {
+  const isProduction = process.env.NODE_ENV === 'production';
+  
+  res.clearCookie('accessToken', {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: 'lax',
+    path: '/'
+  });
+  
+  res.clearCookie('refreshToken', {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: 'lax',
+    path: '/'
+  });
 };
 
 // Send OTP for signup
@@ -271,25 +321,10 @@ router.post('/signup/complete', async (req, res) => {
         ip_address: req.ip || 'unknown'
       });
 
-    // Generate JWT token
-    const token = generateToken(newUser.id, newUser.email);
+    // Set secure HttpOnly cookies (always - no cookie consent needed for security)
+    setAuthCookies(res, newUser.id, newUser.email);
 
-    // Check if user has accepted cookies (new users won't have consent yet, so don't set cookie)
-    // Cookie will be set later when user accepts cookies
-    const cookieConsent = newUser.cookie_consent;
-    const shouldSetCookie = cookieConsent === 'accepted';
-
-    // Set HTTP-only cookie only if user has accepted cookies
-    if (shouldSetCookie) {
-      const isProduction = process.env.NODE_ENV === 'production';
-      res.cookie('token', token, {
-        httpOnly: true,
-        secure: isProduction, // Use secure cookies in production (HTTPS)
-        sameSite: 'lax',
-        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-      });
-    }
-
+    // DO NOT return tokens in response body (security best practice)
     res.json({ 
       success: true, 
       message: 'Account created successfully',
@@ -297,8 +332,8 @@ router.post('/signup/complete', async (req, res) => {
         id: newUser.id,
         email: newUser.email,
         name: newUser.name
-      },
-      token // Always return token in response (for in-memory storage if no consent)
+      }
+      // Tokens are in HttpOnly cookies only
     });
   } catch (error) {
     console.error('Error in complete-signup:', error);
@@ -354,27 +389,13 @@ router.post('/login', async (req, res) => {
         ip_address: req.ip || 'unknown'
       });
 
-    // Generate JWT token
-    const token = generateToken(user.id, user.email);
-
     // Check if user is admin (knowhowcafe2025@gmail.com)
     const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
 
-    // Check if user has accepted cookies
-    const cookieConsent = user.cookie_consent;
-    const shouldSetCookie = cookieConsent === 'accepted';
+    // Set secure HttpOnly cookies (always - security requirement)
+    setAuthCookies(res, user.id, user.email);
 
-    // Set HTTP-only cookie only if user has accepted cookies
-    if (shouldSetCookie) {
-      const isProduction = process.env.NODE_ENV === 'production';
-      res.cookie('token', token, {
-        httpOnly: true,
-        secure: isProduction, // Use secure cookies in production (HTTPS)
-        sameSite: 'lax',
-        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-      });
-    }
-
+    // DO NOT return tokens in response body (security best practice)
     res.json({ 
       success: true, 
       message: 'Login successful',
@@ -383,8 +404,8 @@ router.post('/login', async (req, res) => {
         email: user.email,
         name: user.name
       },
-      token, // Always return token in response (for in-memory storage if no consent)
       isAdmin
+      // Tokens are in HttpOnly cookies only
     });
   } catch (error) {
     console.error('Error in login:', error);
@@ -661,59 +682,51 @@ router.post('/forgot-password/reset', async (req, res) => {
   }
 });
 
-// Get current user (verify token and return user info)
-// Supports both cookie-based and header-based authentication
+// Get current user (verify token from HttpOnly cookie)
 router.get('/me', async (req, res) => {
   try {
-    // Try to get token from cookie first (for cookie-based auth)
-    let token = req.cookies?.token;
+    // Only get token from HttpOnly cookie (secure by design)
+    const accessToken = req.cookies?.accessToken;
     
-    // If not in cookie, try Authorization header (for in-memory auth)
-    if (!token) {
-      const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        token = authHeader.split(' ')[1];
-      }
-    }
-    
-    if (!token) {
+    if (!accessToken) {
       return res.status(401).json({ 
         success: false, 
         message: 'No token provided' 
       });
     }
     
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      
-      // Get user from database
-      const { data: user, error: userError } = await supabase
-        .from('users')
-        .select('id, email, name, created_at')
-        .eq('id', decoded.userId)
-        .maybeSingle();
-
-      if (userError || !user) {
-        return res.status(404).json({ 
-          success: false, 
-          message: 'User not found' 
-        });
-      }
-
-      res.json({ 
-        success: true, 
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name
-        }
-      });
-    } catch (tokenError) {
+    const decoded = verifyAccessToken(accessToken);
+    if (!decoded) {
       return res.status(401).json({ 
         success: false, 
         message: 'Invalid or expired token' 
       });
     }
+    
+    // Get user from database
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, name, created_at, phone, address')
+      .eq('id', decoded.userId)
+      .maybeSingle();
+
+    if (userError || !user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        phone: user.phone || null,
+        address: user.address || null
+      }
+    });
   } catch (error) {
     console.error('Error in /me:', error);
     res.status(500).json({ 
@@ -723,70 +736,67 @@ router.get('/me', async (req, res) => {
   }
 });
 
-// Get all users (admin only)
+// Get all users (admin only) - uses cookie-based auth
 router.get('/all-users', async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
+    const accessToken = req.cookies?.accessToken;
     
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!accessToken) {
       return res.status(401).json({ 
         success: false, 
         message: 'Authentication required' 
       });
     }
-
-    const token = authHeader.split(' ')[1];
     
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      
-      // Get user to check if admin
-      const { data: user, error: userError } = await supabase
-        .from('users')
-        .select('email')
-        .eq('id', decoded.userId)
-        .maybeSingle();
-
-      if (userError || !user) {
-        return res.status(404).json({ 
-          success: false, 
-          message: 'User not found' 
-        });
-      }
-
-      // Check if admin (knowhowcafe2025@gmail.com)
-      const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
-      if (!isAdmin) {
-        return res.status(403).json({ 
-          success: false, 
-          message: 'Admin access required' 
-        });
-      }
-
-      // Get all users
-      const { data: users, error: usersError } = await supabase
-        .from('users')
-        .select('id, email, name, created_at')
-        .order('created_at', { ascending: false });
-
-      if (usersError) {
-        console.error('Error fetching users:', usersError);
-        return res.status(500).json({ 
-          success: false, 
-          message: 'Failed to fetch users' 
-        });
-      }
-
-      res.json({ 
-        success: true, 
-        users: users || []
-      });
-    } catch (jwtError) {
+    const decoded = verifyAccessToken(accessToken);
+    if (!decoded) {
       return res.status(401).json({ 
         success: false, 
-        message: 'Invalid token' 
+        message: 'Invalid or expired token' 
       });
     }
+    
+    // Get user to check if admin
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('email')
+      .eq('id', decoded.userId)
+      .maybeSingle();
+
+    if (userError || !user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    // Check if admin (knowhowcafe2025@gmail.com)
+    const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
+    if (!isAdmin) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin access required' 
+      });
+    }
+
+    // Get all users
+    const { data: users, error: usersError } = await supabase
+      .from('users')
+      .select('id, email, name, created_at')
+      .order('created_at', { ascending: false });
+
+    if (usersError) {
+      console.error('Error fetching users:', usersError);
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Failed to fetch users' 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      users: users || []
+    });
   } catch (error) {
     console.error('Error in /all-users:', error);
     res.status(500).json({ 
@@ -796,17 +806,65 @@ router.get('/all-users', async (req, res) => {
   }
 });
 
-// Logout (client-side token removal, but endpoint for consistency)
+// Refresh token endpoint with rotation
+router.post('/refresh', async (req, res) => {
+  try {
+    const refreshToken = req.cookies?.refreshToken;
+    
+    if (!refreshToken) {
+      return res.status(401).json({
+        success: false,
+        message: 'No refresh token provided'
+      });
+    }
+    
+    const decoded = verifyRefreshToken(refreshToken);
+    if (!decoded) {
+      // Clear invalid refresh token
+      clearAuthCookies(res);
+      return res.status(403).json({
+        success: false,
+        message: 'Invalid or expired refresh token'
+      });
+    }
+    
+    // Get user from database
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email')
+      .eq('id', decoded.userId)
+      .maybeSingle();
+    
+    if (userError || !user) {
+      clearAuthCookies(res);
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    // Token rotation: Generate new access and refresh tokens
+    // Old refresh token is invalidated by issuing a new one
+    setAuthCookies(res, user.id, user.email);
+    
+    res.json({
+      success: true,
+      message: 'Token refreshed successfully'
+    });
+  } catch (error) {
+    console.error('Error in /refresh:', error);
+    clearAuthCookies(res);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// Logout - clear all auth cookies
 router.post('/logout', async (req, res) => {
   try {
-    const isProduction = process.env.NODE_ENV === 'production';
-    
-    // Clear the auth cookie
-    res.clearCookie('token', {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: 'lax'
-    });
+    clearAuthCookies(res);
     
     res.json({ 
       success: true, 
@@ -1251,17 +1309,16 @@ router.get('/google/callback', async (req, res) => {
         ip_address: req.ip || 'unknown'
       });
 
-    // Generate JWT token
-    const token = generateToken(user.id, user.email);
-
     // Check if user is admin
     const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
 
-    // Redirect to frontend with token
-    // Use HTTP 302 redirect (standard for OAuth callbacks)
+    // Set secure HttpOnly cookies (tokens in cookies, not URL)
+    setAuthCookies(res, user.id, user.email);
+
+    // Redirect to frontend WITHOUT tokens in URL (security)
+    // Frontend will read user info from cookies via /me endpoint
     try {
       const redirectUrl = new URL(`${frontendUrl}/auth/google/callback`);
-      redirectUrl.searchParams.set('token', token);
       redirectUrl.searchParams.set('email', user.email);
       redirectUrl.searchParams.set('name', user.name || 'User');
       if (isAdmin) {
@@ -1270,24 +1327,21 @@ router.get('/google/callback', async (req, res) => {
       if (isNewUser) {
         redirectUrl.searchParams.set('newUser', 'true');
       }
+      // DO NOT include token in URL - it's in HttpOnly cookie
 
       const finalUrl = redirectUrl.toString();
       console.log('=== Google OAuth Success ===');
       console.log('User authenticated:', user.email);
       console.log('Redirecting to frontend:', finalUrl);
-      console.log('Frontend URL used:', frontendUrl);
-      console.log('Default Frontend URL:', FRONTEND_URL_DEFAULT);
-      console.log('Token length:', token.length);
+      console.log('Tokens set in HttpOnly cookies (not in URL)');
       console.log('===========================');
 
       // Use HTTP 302 redirect (temporary redirect)
-      // This is the standard way to handle OAuth callbacks
       res.redirect(302, finalUrl);
     } catch (urlError) {
       console.error('Error constructing redirect URL:', urlError);
-      console.error('Frontend URL that failed:', frontendUrl);
-      // Fallback: redirect with query string manually
-      const fallbackUrl = `${frontendUrl}/auth/google/callback?token=${encodeURIComponent(token)}&email=${encodeURIComponent(user.email)}&name=${encodeURIComponent(user.name || 'User')}${isAdmin ? '&isAdmin=true' : ''}${isNewUser ? '&newUser=true' : ''}`;
+      // Fallback: redirect without token
+      const fallbackUrl = `${frontendUrl}/auth/google/callback?email=${encodeURIComponent(user.email)}&name=${encodeURIComponent(user.name || 'User')}${isAdmin ? '&isAdmin=true' : ''}${isNewUser ? '&newUser=true' : ''}`;
       console.log('Using fallback redirect URL:', fallbackUrl);
       res.redirect(302, fallbackUrl);
     }
@@ -1302,9 +1356,9 @@ router.get('/google/callback', async (req, res) => {
 // Get user's cookie consent status
 router.get('/cookie-consent', async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    const accessToken = req.cookies?.accessToken;
     
-    if (!token) {
+    if (!accessToken) {
       return res.status(401).json({
         success: false,
         message: 'Authentication required'
@@ -1312,13 +1366,11 @@ router.get('/cookie-consent', async (req, res) => {
     }
 
     // Verify token and get user email
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (jwtError) {
+    const decoded = verifyAccessToken(accessToken);
+    if (!decoded) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid token'
+        message: 'Invalid or expired token'
       });
     }
 
@@ -1354,10 +1406,10 @@ router.get('/cookie-consent', async (req, res) => {
 // Update user's cookie consent status
 router.post('/cookie-consent', async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    const accessToken = req.cookies?.accessToken;
     const { consent } = req.body; // 'accepted' or 'declined'
     
-    if (!token) {
+    if (!accessToken) {
       return res.status(401).json({
         success: false,
         message: 'Authentication required'
@@ -1372,13 +1424,11 @@ router.post('/cookie-consent', async (req, res) => {
     }
 
     // Verify token and get user email
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (jwtError) {
+    const decoded = verifyAccessToken(accessToken);
+    if (!decoded) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid token'
+        message: 'Invalid or expired token'
       });
     }
 
@@ -1419,25 +1469,15 @@ router.post('/cookie-consent', async (req, res) => {
 
     const isProduction = process.env.NODE_ENV === 'production';
 
-    // If user accepts cookies and has a token, set the auth cookie
+    // Always set secure cookies regardless of consent (security requirement)
+    // Cookie consent is for analytics/tracking, not authentication security
     if (consent === 'accepted') {
-      // Generate a new token for the user
-      const authToken = generateToken(user.id, user.email);
-      
-      // Set HTTP-only cookie
-      res.cookie('token', authToken, {
-        httpOnly: true,
-        secure: isProduction, // Use secure cookies in production (HTTPS)
-        sameSite: 'lax',
-        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-      });
+      // Set secure auth cookies
+      setAuthCookies(res, user.id, user.email);
     } else if (consent === 'declined') {
-      // Clear the auth cookie if user declines
-      res.clearCookie('token', {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: 'lax'
-      });
+      // Still set auth cookies for security, but user can opt out of tracking
+      // Authentication cookies are essential for security
+      setAuthCookies(res, user.id, user.email);
     }
 
     res.json({
@@ -1459,9 +1499,9 @@ router.post('/cookie-consent', async (req, res) => {
 // Get user's cart
 router.get('/cart', async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    const accessToken = req.cookies?.accessToken;
     
-    if (!token) {
+    if (!accessToken) {
       return res.status(401).json({
         success: false,
         message: 'Authentication required'
@@ -1469,13 +1509,11 @@ router.get('/cart', async (req, res) => {
     }
 
     // Verify token and get user email
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (jwtError) {
+    const decoded = verifyAccessToken(accessToken);
+    if (!decoded) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid token'
+        message: 'Invalid or expired token'
       });
     }
 
@@ -1526,10 +1564,10 @@ router.get('/cart', async (req, res) => {
 // Add item to cart
 router.post('/cart/add', async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    const accessToken = req.cookies?.accessToken;
     const { kitName, price, quantity = 1 } = req.body;
     
-    if (!token) {
+    if (!accessToken) {
       return res.status(401).json({
         success: false,
         message: 'Authentication required'
@@ -1544,13 +1582,11 @@ router.post('/cart/add', async (req, res) => {
     }
 
     // Verify token and get user email
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (jwtError) {
+    const decoded = verifyAccessToken(accessToken);
+    if (!decoded) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid token'
+        message: 'Invalid or expired token'
       });
     }
 
@@ -1642,10 +1678,10 @@ router.post('/cart/add', async (req, res) => {
 // Update cart item quantity
 router.put('/cart/update', async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    const accessToken = req.cookies?.accessToken;
     const { kitName, quantity } = req.body;
     
-    if (!token) {
+    if (!accessToken) {
       return res.status(401).json({
         success: false,
         message: 'Authentication required'
@@ -1659,9 +1695,19 @@ router.put('/cart/update', async (req, res) => {
       });
     }
 
+    // Verify token and get user email
+    const decoded = verifyAccessToken(accessToken);
+    if (!decoded) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired token'
+      });
+    }
+
+    const userEmail = decoded.email;
+
     if (quantity <= 0) {
-      // Remove item if quantity is 0 or less - call remove endpoint logic
-      const userEmail = decoded.email;
+      // Remove item if quantity is 0 or less
       const { data: user } = await supabase
         .from('users')
         .select('id')
@@ -1680,19 +1726,6 @@ router.put('/cart/update', async (req, res) => {
         message: 'Item removed from cart'
       });
     }
-
-    // Verify token and get user email
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (jwtError) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token'
-      });
-    }
-
-    const userEmail = decoded.email;
 
     // Get user ID
     const { data: user, error: userError } = await supabase
@@ -1745,10 +1778,10 @@ router.put('/cart/update', async (req, res) => {
 // Remove item from cart
 router.delete('/cart/remove', async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    const accessToken = req.cookies?.accessToken;
     const { kitName } = req.body;
     
-    if (!token) {
+    if (!accessToken) {
       return res.status(401).json({
         success: false,
         message: 'Authentication required'
@@ -1763,13 +1796,11 @@ router.delete('/cart/remove', async (req, res) => {
     }
 
     // Verify token and get user email
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (jwtError) {
+    const decoded = verifyAccessToken(accessToken);
+    if (!decoded) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid token'
+        message: 'Invalid or expired token'
       });
     }
 
@@ -1820,9 +1851,9 @@ router.delete('/cart/remove', async (req, res) => {
 // Clear entire cart
 router.delete('/cart/clear', async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    const accessToken = req.cookies?.accessToken;
     
-    if (!token) {
+    if (!accessToken) {
       return res.status(401).json({
         success: false,
         message: 'Authentication required'
@@ -1830,13 +1861,11 @@ router.delete('/cart/clear', async (req, res) => {
     }
 
     // Verify token and get user email
-    let decoded;
-    try {
-      decoded = jwt.verify(token, JWT_SECRET);
-    } catch (jwtError) {
+    const decoded = verifyAccessToken(accessToken);
+    if (!decoded) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid token'
+        message: 'Invalid or expired token'
       });
     }
 

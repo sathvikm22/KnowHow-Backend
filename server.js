@@ -13,45 +13,76 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS configuration
+// CORS configuration - Strict production-only origin
 const corsOptions = {
   origin: function (origin, callback) {
-
     // ✅ Allow requests with NO origin (Render health checks, Postman, curl)
     if (!origin) return callback(null, true);
 
-    // Allowed frontend origins
-    const allowedOrigins = [
-      // Local development
-      'http://localhost:8080',
-      'http://localhost:5173',
-      'http://localhost:3000',
-      'http://127.0.0.1:8080',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:3000',
-      
-      // Production - Vercel frontend
-      'https://know-how-frontend.vercel.app',
-      'https://www.know-how-frontend.vercel.app',
-      'https://know-how-frontend-rosy.vercel.app',
-      'https://www.knowhowindia.in',
-      'https://knowhowindia.in'
-    ];
+    // Production: Only allow knowhowindia.in
+    const allowedOrigins = process.env.NODE_ENV === 'production' 
+      ? [
+          'https://www.knowhowindia.in',
+          'https://knowhowindia.in'
+        ]
+      : [
+          // Local development only
+          'http://localhost:8080',
+          'http://localhost:5173',
+          'http://localhost:3000',
+          'http://127.0.0.1:8080',
+          'http://127.0.0.1:5173',
+          'http://127.0.0.1:3000'
+        ];
 
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
 
+    console.warn(`⚠️  CORS blocked origin: ${origin}`);
     return callback(new Error(`Not allowed by CORS: ${origin}`));
   },
 
-  credentials: true,
+  credentials: true, // Required for HttpOnly cookies
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
-  exposedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'X-Requested-With', 'Accept'],
+  // Removed 'Authorization' from allowedHeaders - we use cookies only
+  exposedHeaders: ['Content-Type'],
+  // Removed 'Authorization' from exposedHeaders
+};
+
+// Security Headers Middleware
+const securityHeaders = (req, res, next) => {
+  // Content Security Policy - strict, no unsafe-inline
+  const csp = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'", // Allow inline styles (required for some frameworks)
+    "img-src 'self' data: https:",
+    "font-src 'self' data:",
+    "connect-src 'self' https://www.knowhowindia.in https://knowhowindia.in",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "upgrade-insecure-requests"
+  ].join('; ');
+
+  res.setHeader('Content-Security-Policy', csp);
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  
+  // HSTS (Strict-Transport-Security) - only in production with HTTPS
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  }
+  
+  next();
 };
 
 // Middleware
+app.use(securityHeaders);
 app.use(cors(corsOptions));
 app.use(cookieParser());
 // Increase body parser limit to handle base64 image uploads (10MB)

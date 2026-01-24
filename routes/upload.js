@@ -1,7 +1,7 @@
 import express from 'express';
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from '../config/supabase.js';
-import jwt from 'jsonwebtoken';
+// JWT verification now uses generateToken utils (cookie-based)
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -25,18 +25,25 @@ if (supabaseUrl && supabaseServiceKey) {
 }
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+// JWT verification now uses generateToken utils (cookie-based)
 
-// Middleware to verify admin
+// Middleware to verify admin - uses HttpOnly cookies only
 const verifyAdmin = async (req, res, next) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '') || req.cookies?.token;
+    // Only get token from HttpOnly cookie (secure by design)
+    const accessToken = req.cookies?.accessToken;
     
-    if (!token) {
+    if (!accessToken) {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET);
+    // Use verifyAccessToken from generateToken utils (validates exp, iat, alg)
+    const { verifyAccessToken } = require('../utils/generateToken.js');
+    const decoded = verifyAccessToken(accessToken);
+    
+    if (!decoded) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired token' });
+    }
     
     const { data: user } = await supabase
       .from('users')
