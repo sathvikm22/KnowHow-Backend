@@ -89,7 +89,6 @@ const verifyAdmin = async (req, res, next) => {
     }
 
     // Use verifyAccessToken from generateToken utils (validates exp, iat, alg)
-    const { verifyAccessToken } = require('../utils/generateToken.js');
     const decoded = verifyAccessToken(accessToken);
     
     if (!decoded) {

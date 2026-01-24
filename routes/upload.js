@@ -1,7 +1,7 @@
 import express from 'express';
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from '../config/supabase.js';
-// JWT verification now uses generateToken utils (cookie-based)
+import { verifyAccessToken } from '../utils/generateToken.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -38,7 +38,6 @@ const verifyAdmin = async (req, res, next) => {
     }
 
     // Use verifyAccessToken from generateToken utils (validates exp, iat, alg)
-    const { verifyAccessToken } = require('../utils/generateToken.js');
     const decoded = verifyAccessToken(accessToken);
     
     if (!decoded) {

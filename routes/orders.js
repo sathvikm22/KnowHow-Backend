@@ -2,6 +2,7 @@ import express from 'express';
 import axios from 'axios';
 import crypto from 'crypto';
 import { supabase } from '../config/supabase.js';
+import { verifyAccessToken } from '../utils/generateToken.js';
 
 const router = express.Router();
 
@@ -415,7 +416,6 @@ router.get('/my-diy-orders', async (req, res) => {
 
     if (accessToken) {
       try {
-        const { verifyAccessToken } = require('../utils/generateToken.js');
         const decoded = verifyAccessToken(accessToken);
         if (decoded) {
           userId = decoded.userId;
@@ -487,7 +487,6 @@ router.get('/all-diy-orders', async (req, res) => {
     }
 
     // Use verifyAccessToken from generateToken utils (validates exp, iat, alg)
-    const { verifyAccessToken } = require('../utils/generateToken.js');
     const decoded = verifyAccessToken(accessToken);
     
     if (!decoded) {
@@ -644,7 +643,6 @@ router.post('/update-delivery-status/:order_id', async (req, res) => {
     }
 
     // Use verifyAccessToken from generateToken utils (validates exp, iat, alg)
-    const { verifyAccessToken } = require('../utils/generateToken.js');
     const decoded = verifyAccessToken(accessToken);
     
     if (!decoded) {

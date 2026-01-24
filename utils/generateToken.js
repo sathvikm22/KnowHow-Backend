@@ -1,6 +1,8 @@
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
-require('dotenv').config();
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || JWT_SECRET + '_refresh';
@@ -179,7 +181,7 @@ function authenticateToken(req, res, next) {
   next();
 }
 
-module.exports = {
+export {
   generateAccessToken,
   generateRefreshToken,
   verifyAccessToken,
