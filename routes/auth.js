@@ -1318,12 +1318,24 @@ router.get('/google/callback', async (req, res) => {
       return res.redirect(`${frontendUrl}/login?error=no_email`);
     }
 
-    // Check if user exists in database
-    const { data: existingUser } = await supabase
+    // Check if user exists in database (case-insensitive search)
+    console.log('Looking for existing user with email:', email);
+    let { data: existingUser } = await supabase
       .from('users')
       .select('id, email, name')
       .eq('email', email.toLowerCase())
       .maybeSingle();
+    
+    // If not found, try case-insensitive search
+    if (!existingUser) {
+      console.log('Exact match not found, trying case-insensitive search');
+      const result = await supabase
+        .from('users')
+        .select('id, email, name')
+        .ilike('email', email)
+        .maybeSingle();
+      existingUser = result.data;
+    }
 
     let user;
     let isNewUser = false;
