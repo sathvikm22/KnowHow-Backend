@@ -1428,11 +1428,18 @@ router.get('/google/callback', async (req, res) => {
 
 // Exchange one-time code for session (sets cookies in API response; avoids redirect cookie issues)
 router.post('/google/complete', async (req, res) => {
+  console.log('=== Google Complete Endpoint Called ===');
+  console.log('Request body:', req.body);
+  console.log('Request origin:', req.headers.origin);
+  
   try {
     const { code } = req.body || {};
     if (!code || typeof code !== 'string') {
+      console.log('Missing or invalid code in request');
       return res.status(400).json({ success: false, message: 'Missing or invalid code' });
     }
+    
+    console.log('Looking up code in database:', code.substring(0, 20) + '...');
     
     // Look up code in database
     const { data: codeData, error: codeError } = await supabase
@@ -1441,6 +1448,8 @@ router.post('/google/complete', async (req, res) => {
       .eq('otp_code', code)
       .eq('purpose', 'google_oauth')
       .maybeSingle();
+    
+    console.log('Database lookup result:', { codeData, codeError });
     
     if (codeError || !codeData) {
       console.warn('Google OAuth code not found:', code.substring(0, 10) + '...');
