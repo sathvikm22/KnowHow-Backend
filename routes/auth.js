@@ -995,15 +995,9 @@ const getFrontendUrl = (reqOrigin = null) => {
 
 const FRONTEND_URL_DEFAULT = getFrontendUrl();
 
-// One-time codes for Google OAuth (avoids setting cookies in redirect-to-other-origin)
-const googleOAuthCodes = new Map();
-const CODE_TTL_MS = 5 * 60 * 1000; // 5 min
-function pruneGoogleCodes() {
-  const now = Date.now();
-  for (const [k, v] of googleOAuthCodes.entries()) {
-    if (now - v.createdAt > CODE_TTL_MS) googleOAuthCodes.delete(k);
-  }
-}
+// One-time codes for Google OAuth are stored in database (otp table)
+// This ensures codes persist across server restarts and multiple instances
+const GOOGLE_CODE_TTL_MS = 5 * 60 * 1000; // 5 min
 
 // Determine backend URL - prioritize environment variable, then detect production
 const getBackendUrl = () => {
@@ -1393,15 +1387,30 @@ router.get('/google/callback', async (req, res) => {
     // Use one-time code flow: cookies set in redirect-to-other-origin are often
     // not stored by browsers. Redirect with code; frontend exchanges it via POST
     // and we set cookies in that response (reliably stored).
-    pruneGoogleCodes();
+    // Store code in database (not memory) to handle Render cold starts / multiple instances.
     const authCode = crypto.randomBytes(32).toString('hex');
-    googleOAuthCodes.set(authCode, {
-      userId: user.id,
-      email: user.email,
-      name: user.name || 'User',
-      isAdmin,
-      createdAt: Date.now()
-    });
+    
+    // Clean up expired Google OAuth codes
+    await supabase
+      .from('otp')
+      .delete()
+      .eq('purpose', 'google_oauth')
+      .lt('expires_at', new Date().toISOString());
+    
+    // Store the one-time code in database
+    const { error: codeError } = await supabase
+      .from('otp')
+      .insert({
+        email: user.email.toLowerCase(),
+        otp_code: authCode,
+        purpose: 'google_oauth',
+        expires_at: new Date(Date.now() + GOOGLE_CODE_TTL_MS).toISOString()
+      });
+    
+    if (codeError) {
+      console.error('Error storing Google OAuth code:', codeError);
+      return res.redirect(`${frontendUrl}/login?error=oauth_code_failed`);
+    }
 
     const redirectUrl = `${frontendUrl}/auth/google/callback?code=${authCode}`;
     console.log('=== Google OAuth Success ===');
@@ -1424,21 +1433,53 @@ router.post('/google/complete', async (req, res) => {
     if (!code || typeof code !== 'string') {
       return res.status(400).json({ success: false, message: 'Missing or invalid code' });
     }
-    pruneGoogleCodes();
-    const data = googleOAuthCodes.get(code);
-    googleOAuthCodes.delete(code);
-    if (!data || Date.now() - data.createdAt > CODE_TTL_MS) {
+    
+    // Look up code in database
+    const { data: codeData, error: codeError } = await supabase
+      .from('otp')
+      .select('email, expires_at')
+      .eq('otp_code', code)
+      .eq('purpose', 'google_oauth')
+      .maybeSingle();
+    
+    if (codeError || !codeData) {
+      console.warn('Google OAuth code not found:', code.substring(0, 10) + '...');
       return res.status(401).json({ success: false, message: 'Invalid or expired code. Please sign in again.' });
     }
-    setAuthCookies(res, data.userId, data.email, req);
+    
+    // Check expiration
+    if (new Date(codeData.expires_at) < new Date()) {
+      // Delete expired code
+      await supabase.from('otp').delete().eq('otp_code', code).eq('purpose', 'google_oauth');
+      return res.status(401).json({ success: false, message: 'Code expired. Please sign in again.' });
+    }
+    
+    // Delete the code (one-time use)
+    await supabase.from('otp').delete().eq('otp_code', code).eq('purpose', 'google_oauth');
+    
+    // Look up user by email
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, name, phone, address')
+      .eq('email', codeData.email.toLowerCase())
+      .maybeSingle();
+    
+    if (userError || !user) {
+      console.error('User not found for Google OAuth:', codeData.email);
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    // Set auth cookies
+    setAuthCookies(res, user.id, user.email, req);
+    
     res.json({
       success: true,
       user: {
-        id: data.userId,
-        email: data.email,
-        name: data.name,
-        phone: null,
-        address: null
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        phone: user.phone || null,
+        address: user.address || null
       }
     });
   } catch (e) {
