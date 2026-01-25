@@ -1388,7 +1388,8 @@ router.get('/google/callback', async (req, res) => {
     // not stored by browsers. Redirect with code; frontend exchanges it via POST
     // and we set cookies in that response (reliably stored).
     // Store code in database (not memory) to handle Render cold starts / multiple instances.
-    const authCode = crypto.randomBytes(32).toString('hex');
+    // Note: otp_code column is VARCHAR(6), so generate a 6-digit code
+    const authCode = Math.floor(100000 + Math.random() * 900000).toString();
     
     // Clean up expired Google OAuth codes
     await supabase
@@ -1439,7 +1440,7 @@ router.post('/google/complete', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing or invalid code' });
     }
     
-    console.log('Looking up code in database:', code.substring(0, 20) + '...');
+    console.log('Looking up code in database:', code);
     
     // Look up code in database
     const { data: codeData, error: codeError } = await supabase
@@ -1452,7 +1453,7 @@ router.post('/google/complete', async (req, res) => {
     console.log('Database lookup result:', { codeData, codeError });
     
     if (codeError || !codeData) {
-      console.warn('Google OAuth code not found:', code.substring(0, 10) + '...');
+      console.warn('Google OAuth code not found:', code);
       return res.status(401).json({ success: false, message: 'Invalid or expired code. Please sign in again.' });
     }
     
