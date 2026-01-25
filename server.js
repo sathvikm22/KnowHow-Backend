@@ -133,6 +133,7 @@ app.use('/api/upload', uploadRoutes);
 console.log('📋 Registered API routes:');
 console.log('   GET  /api/auth/google - Google OAuth initiation');
 console.log('   GET  /api/auth/google/callback - Google OAuth callback');
+console.log('   POST /api/auth/google/complete - Exchange one-time code for session');
 console.log('   POST /api/auth/signup/send-otp - Send signup OTP');
 console.log('   POST /api/auth/login - User login');
 console.log('   POST /api/create-order - Create Cashfree payment session (bookings)');

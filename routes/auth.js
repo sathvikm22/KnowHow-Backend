@@ -1,5 +1,6 @@
 import express from 'express';
 import axios from 'axios';
+import crypto from 'crypto';
 import { supabase } from '../config/supabase.js';
 import { sendOTPEmail } from '../config/brevo.js';
 import { generateOTP, isOTPExpired } from '../utils/otp.js';
@@ -994,6 +995,16 @@ const getFrontendUrl = (reqOrigin = null) => {
 
 const FRONTEND_URL_DEFAULT = getFrontendUrl();
 
+// One-time codes for Google OAuth (avoids setting cookies in redirect-to-other-origin)
+const googleOAuthCodes = new Map();
+const CODE_TTL_MS = 5 * 60 * 1000; // 5 min
+function pruneGoogleCodes() {
+  const now = Date.now();
+  for (const [k, v] of googleOAuthCodes.entries()) {
+    if (now - v.createdAt > CODE_TTL_MS) googleOAuthCodes.delete(k);
+  }
+}
+
 // Determine backend URL - prioritize environment variable, then detect production
 const getBackendUrl = () => {
   // If explicitly set, use it
@@ -1379,44 +1390,60 @@ router.get('/google/callback', async (req, res) => {
     // Check if user is admin
     const isAdmin = user.email.toLowerCase() === 'knowhowcafe2025@gmail.com';
 
-    // Set secure HttpOnly cookies (tokens in cookies, not URL)
-    setAuthCookies(res, user.id, user.email, req);
+    // Use one-time code flow: cookies set in redirect-to-other-origin are often
+    // not stored by browsers. Redirect with code; frontend exchanges it via POST
+    // and we set cookies in that response (reliably stored).
+    pruneGoogleCodes();
+    const authCode = crypto.randomBytes(32).toString('hex');
+    googleOAuthCodes.set(authCode, {
+      userId: user.id,
+      email: user.email,
+      name: user.name || 'User',
+      isAdmin,
+      createdAt: Date.now()
+    });
 
-    // Redirect to frontend WITHOUT tokens in URL (security)
-    // Frontend will read user info from cookies via /me endpoint
-    try {
-      const redirectUrl = new URL(`${frontendUrl}/auth/google/callback`);
-      redirectUrl.searchParams.set('email', user.email);
-      redirectUrl.searchParams.set('name', user.name || 'User');
-      if (isAdmin) {
-        redirectUrl.searchParams.set('isAdmin', 'true');
-      }
-      if (isNewUser) {
-        redirectUrl.searchParams.set('newUser', 'true');
-      }
-      // DO NOT include token in URL - it's in HttpOnly cookie
-
-      const finalUrl = redirectUrl.toString();
-      console.log('=== Google OAuth Success ===');
-      console.log('User authenticated:', user.email);
-      console.log('Redirecting to frontend:', finalUrl);
-      console.log('Tokens set in HttpOnly cookies (not in URL)');
-      console.log('===========================');
-
-      // Use HTTP 302 redirect (temporary redirect)
-      res.redirect(302, finalUrl);
-    } catch (urlError) {
-      console.error('Error constructing redirect URL:', urlError);
-      // Fallback: redirect without token
-      const fallbackUrl = `${frontendUrl}/auth/google/callback?email=${encodeURIComponent(user.email)}&name=${encodeURIComponent(user.name || 'User')}${isAdmin ? '&isAdmin=true' : ''}${isNewUser ? '&newUser=true' : ''}`;
-      console.log('Using fallback redirect URL:', fallbackUrl);
-      res.redirect(302, fallbackUrl);
-    }
+    const redirectUrl = `${frontendUrl}/auth/google/callback?code=${authCode}`;
+    console.log('=== Google OAuth Success ===');
+    console.log('User authenticated:', user.email);
+    console.log('Redirecting to frontend with one-time code');
+    console.log('===========================');
+    res.redirect(302, redirectUrl);
 
   } catch (error) {
     console.error('Google OAuth callback error:', error);
     // Use default frontend URL for error redirects
     res.redirect(`${FRONTEND_URL_DEFAULT}/login?error=oauth_callback_failed`);
+  }
+});
+
+// Exchange one-time code for session (sets cookies in API response; avoids redirect cookie issues)
+router.post('/google/complete', async (req, res) => {
+  try {
+    const { code } = req.body || {};
+    if (!code || typeof code !== 'string') {
+      return res.status(400).json({ success: false, message: 'Missing or invalid code' });
+    }
+    pruneGoogleCodes();
+    const data = googleOAuthCodes.get(code);
+    googleOAuthCodes.delete(code);
+    if (!data || Date.now() - data.createdAt > CODE_TTL_MS) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired code. Please sign in again.' });
+    }
+    setAuthCookies(res, data.userId, data.email, req);
+    res.json({
+      success: true,
+      user: {
+        id: data.userId,
+        email: data.email,
+        name: data.name,
+        phone: null,
+        address: null
+      }
+    });
+  } catch (e) {
+    console.error('Google complete error:', e);
+    res.status(500).json({ success: false, message: 'Failed to complete sign-in' });
   }
 });
 
