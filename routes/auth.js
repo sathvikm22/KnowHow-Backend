@@ -1398,6 +1398,8 @@ router.get('/google/callback', async (req, res) => {
       .eq('purpose', 'google_oauth')
       .lt('expires_at', new Date().toISOString());
     
+    console.log('Storing OAuth code for user:', user.email, 'User ID:', user.id);
+    
     // Store the one-time code in database
     const { error: codeError } = await supabase
       .from('otp')
@@ -1412,6 +1414,8 @@ router.get('/google/callback', async (req, res) => {
       console.error('Error storing Google OAuth code:', codeError);
       return res.redirect(`${frontendUrl}/login?error=oauth_code_failed`);
     }
+    
+    console.log('OAuth code stored successfully:', authCode);
 
     const redirectUrl = `${frontendUrl}/auth/google/callback?code=${authCode}`;
     console.log('=== Google OAuth Success ===');
@@ -1467,17 +1471,46 @@ router.post('/google/complete', async (req, res) => {
     // Delete the code (one-time use)
     await supabase.from('otp').delete().eq('otp_code', code).eq('purpose', 'google_oauth');
     
-    // Look up user by email
-    const { data: user, error: userError } = await supabase
+    console.log('Looking up user with email:', codeData.email);
+    
+    // Look up user by email (try exact match first, then case-insensitive)
+    let { data: user, error: userError } = await supabase
       .from('users')
       .select('id, email, name, phone, address')
-      .eq('email', codeData.email.toLowerCase())
+      .eq('email', codeData.email)
       .maybeSingle();
+    
+    // If not found, try lowercase
+    if (!user && !userError) {
+      console.log('Exact match not found, trying lowercase:', codeData.email.toLowerCase());
+      const result = await supabase
+        .from('users')
+        .select('id, email, name, phone, address')
+        .eq('email', codeData.email.toLowerCase())
+        .maybeSingle();
+      user = result.data;
+      userError = result.error;
+    }
+    
+    // If still not found, try ilike for case-insensitive search
+    if (!user && !userError) {
+      console.log('Lowercase not found, trying case-insensitive search');
+      const result = await supabase
+        .from('users')
+        .select('id, email, name, phone, address')
+        .ilike('email', codeData.email)
+        .maybeSingle();
+      user = result.data;
+      userError = result.error;
+    }
     
     if (userError || !user) {
       console.error('User not found for Google OAuth:', codeData.email);
+      console.error('User error:', userError);
       return res.status(404).json({ success: false, message: 'User not found' });
     }
+    
+    console.log('User found:', user.email);
     
     // Set auth cookies
     setAuthCookies(res, user.id, user.email, req);
