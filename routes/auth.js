@@ -69,6 +69,17 @@ const setAuthCookies = (res, userId, email, req = null) => {
   // Log Set-Cookie headers to verify they're being sent
   const setCookieHeaders = res.getHeader('Set-Cookie');
   console.log('📋 Set-Cookie headers:', Array.isArray(setCookieHeaders) ? setCookieHeaders.length : 'not array');
+  if (Array.isArray(setCookieHeaders)) {
+    setCookieHeaders.forEach((header, index) => {
+      console.log(`   Cookie ${index + 1}:`, header.substring(0, 100) + '...');
+    });
+  }
+  
+  // Also log the actual cookie values being set (first 20 chars for security)
+  console.log('🔍 Cookie values (first 20 chars):', {
+    accessToken: accessToken.substring(0, 20) + '...',
+    refreshToken: refreshToken.substring(0, 20) + '...'
+  });
   
   return { accessToken, refreshToken };
 };
@@ -762,6 +773,8 @@ router.get('/me', async (req, res) => {
       origin: req.get('origin'),
       referer: req.get('referer')
     });
+    console.log('   Full cookie header:', req.headers.cookie || 'NO COOKIES IN REQUEST');
+    console.log('   ⚠️  NOTE: If cookies are missing, this may be due to incognito mode blocking third-party cookies');
     
     // Only get token from HttpOnly cookie (secure by design)
     const accessToken = req.cookies?.accessToken;
