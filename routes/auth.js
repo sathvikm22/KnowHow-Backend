@@ -1402,13 +1402,38 @@ router.get('/google/callback', async (req, res) => {
     console.log('User authenticated:', user.email);
     console.log('User ID:', user.id);
     
-    // Set auth cookies directly in the redirect response
-    // This is simpler and works for same-origin redirects
-    setAuthCookies(res, user.id, user.email, req);
+    // Generate a simple one-time code for cookie exchange
+    // Cookies set during cross-origin redirects don't work reliably
+    // So we use a code that frontend exchanges for cookies via POST
+    const authCode = Math.floor(100000 + Math.random() * 900000).toString();
     
-    // Redirect to frontend with success
-    const redirectUrl = `${frontendUrl}/auth/google/callback?success=true&email=${encodeURIComponent(user.email)}&name=${encodeURIComponent(user.name || 'User')}`;
-    console.log('Redirecting to frontend:', redirectUrl);
+    // Clean up expired codes
+    await supabase
+      .from('otp')
+      .delete()
+      .eq('purpose', 'google_oauth')
+      .lt('expires_at', new Date().toISOString());
+    
+    // Store code with user_id (most reliable lookup)
+    const { error: codeError } = await supabase
+      .from('otp')
+      .insert({
+        email: user.id, // Store user_id in email field for simplicity
+        otp_code: authCode,
+        purpose: 'google_oauth',
+        expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString() // 5 minutes
+      });
+    
+    if (codeError) {
+      console.error('Error storing OAuth code:', codeError);
+      return res.redirect(`${frontendUrl}/login?error=oauth_code_failed`);
+    }
+    
+    console.log('OAuth code stored:', authCode);
+    
+    // Redirect to frontend with code
+    const redirectUrl = `${frontendUrl}/auth/google/callback?code=${authCode}`;
+    console.log('Redirecting to frontend with code');
     res.redirect(302, redirectUrl);
 
   } catch (error) {
@@ -1418,6 +1443,76 @@ router.get('/google/callback', async (req, res) => {
   }
 });
 
+// Exchange Google OAuth code for cookies (POST request - cookies work reliably here)
+router.post('/google/complete', async (req, res) => {
+  console.log('=== Google Complete Endpoint Called ===');
+  console.log('Request body:', req.body);
+  
+  try {
+    const { code } = req.body || {};
+    if (!code || typeof code !== 'string') {
+      return res.status(400).json({ success: false, message: 'Missing or invalid code' });
+    }
+    
+    console.log('Looking up code:', code);
+    
+    // Look up code
+    const { data: codeData, error: codeError } = await supabase
+      .from('otp')
+      .select('email, expires_at')
+      .eq('otp_code', code)
+      .eq('purpose', 'google_oauth')
+      .maybeSingle();
+    
+    if (codeError || !codeData) {
+      console.warn('Code not found:', code);
+      return res.status(401).json({ success: false, message: 'Invalid or expired code' });
+    }
+    
+    // Check expiration
+    if (new Date(codeData.expires_at) < new Date()) {
+      await supabase.from('otp').delete().eq('otp_code', code).eq('purpose', 'google_oauth');
+      return res.status(401).json({ success: false, message: 'Code expired' });
+    }
+    
+    // Delete code (one-time use)
+    await supabase.from('otp').delete().eq('otp_code', code).eq('purpose', 'google_oauth');
+    
+    // Look up user by ID (stored in email field)
+    const userId = codeData.email;
+    console.log('Looking up user by ID:', userId);
+    
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id, email, name, phone, address')
+      .eq('id', userId)
+      .maybeSingle();
+    
+    if (userError || !user) {
+      console.error('User not found for ID:', userId);
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    
+    console.log('User found:', user.email);
+    
+    // Set auth cookies (this works because it's a POST request, not a redirect)
+    setAuthCookies(res, user.id, user.email, req);
+    
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        phone: user.phone || null,
+        address: user.address || null
+      }
+    });
+  } catch (e) {
+    console.error('Google complete error:', e);
+    res.status(500).json({ success: false, message: 'Failed to complete sign-in' });
+  }
+});
 
 // Get user's cookie consent status
 router.get('/cookie-consent', async (req, res) => {
