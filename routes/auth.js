@@ -1402,16 +1402,11 @@ router.get('/google/callback', async (req, res) => {
     console.log('User authenticated:', user.email);
     console.log('User ID:', user.id);
     
-    // Generate a simple one-time code for cookie exchange
-    // Cookies set during cross-origin redirects don't work reliably
-    // So we use a code that frontend exchanges for cookies via POST
+    // SIMPLE APPROACH: Generate code and store ONLY user_id (UUID)
+    // This is the most reliable - user_id is unique and guaranteed to exist
     const authCode = Math.floor(100000 + Math.random() * 900000).toString();
     
-    console.log('=== Storing OAuth Code ===');
-    console.log('User ID:', user.id);
-    console.log('User ID type:', typeof user.id);
-    console.log('User email:', user.email);
-    console.log('Generated code:', authCode);
+    console.log('Storing OAuth code:', authCode, 'for user_id:', user.id);
     
     // Clean up expired codes
     await supabase
@@ -1420,40 +1415,25 @@ router.get('/google/callback', async (req, res) => {
       .eq('purpose', 'google_oauth')
       .lt('expires_at', new Date().toISOString());
     
-    // Store code with user_id and email for reliable lookup
-    // Format: "user_id::email" so we can parse both
-    const insertData = {
-      email: `${user.id}::${user.email.toLowerCase()}`, // Store both user_id and email
-      otp_code: authCode,
-      purpose: 'google_oauth',
-      expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString() // 5 minutes
-    };
-    
-    console.log('Inserting OTP with data:', {
-      email: insertData.email,
-      otp_code: insertData.otp_code,
-      purpose: insertData.purpose,
-      expires_at: insertData.expires_at
-    });
-    
-    const { error: codeError, data: insertedData } = await supabase
+    // Store ONLY user_id (UUID) - this is guaranteed to work
+    const { error: codeError } = await supabase
       .from('otp')
-      .insert(insertData)
-      .select();
+      .insert({
+        email: user.id, // Store user_id directly (UUID string)
+        otp_code: authCode,
+        purpose: 'google_oauth',
+        expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString()
+      });
     
     if (codeError) {
       console.error('Error storing OAuth code:', codeError);
-      console.error('Error details:', JSON.stringify(codeError, null, 2));
       return res.redirect(`${frontendUrl}/login?error=oauth_code_failed`);
     }
     
-    console.log('OAuth code stored successfully:', authCode);
-    console.log('Inserted OTP record:', insertedData);
+    console.log('Code stored successfully, redirecting with code:', authCode);
     
     // Redirect to frontend with code
-    const redirectUrl = `${frontendUrl}/auth/google/callback?code=${authCode}`;
-    console.log('Redirecting to frontend with code');
-    res.redirect(302, redirectUrl);
+    res.redirect(302, `${frontendUrl}/auth/google/callback?code=${authCode}`);
 
   } catch (error) {
     console.error('Google OAuth callback error:', error);
@@ -1516,7 +1496,9 @@ router.post('/google/complete', async (req, res) => {
     await supabase.from('otp').delete().eq('otp_code', code).eq('purpose', 'google_oauth');
     console.log('Code deleted after successful lookup');
     
-    // Parse user_id and email from stored format: "user_id::email"
+    // Parse user_id from stored value
+    // New format: just user_id (UUID)
+    // Legacy format: "user_id::email"
     const storedValue = codeData.email;
     console.log('Stored value from code data:', storedValue);
     
@@ -1524,15 +1506,15 @@ router.post('/google/complete', async (req, res) => {
     let userEmail = null;
     
     if (storedValue && storedValue.includes('::')) {
+      // Legacy format: "user_id::email"
       const parts = storedValue.split('::');
       userId = parts[0];
       userEmail = parts[1];
-      console.log('Parsed user_id:', userId);
-      console.log('Parsed email:', userEmail);
+      console.log('Legacy format detected - Parsed user_id:', userId, 'email:', userEmail);
     } else {
-      // Legacy format: just user_id
+      // New format: just user_id (UUID)
       userId = storedValue;
-      console.log('Legacy format (user_id only):', userId);
+      console.log('New format (user_id only):', userId);
     }
     
     if (!userId) {
@@ -1544,7 +1526,7 @@ router.post('/google/complete', async (req, res) => {
     console.log('Querying users table for id:', userId);
     let { data: user, error: userError } = await supabase
       .from('users')
-      .select('id, email, name, phone, address')
+      .select('id, email, name')
       .eq('id', userId)
       .maybeSingle();
     
@@ -1559,7 +1541,7 @@ router.post('/google/complete', async (req, res) => {
       console.log('ID lookup failed, trying email lookup:', userEmail);
       const emailResult = await supabase
         .from('users')
-        .select('id, email, name, phone, address')
+        .select('id, email, name')
         .eq('email', userEmail.toLowerCase())
         .maybeSingle();
       user = emailResult.data;
@@ -1613,9 +1595,7 @@ router.post('/google/complete', async (req, res) => {
       user: {
         id: user.id,
         email: user.email,
-        name: user.name,
-        phone: user.phone || null,
-        address: user.address || null
+        name: user.name
       }
     });
   } catch (e) {
