@@ -1407,6 +1407,12 @@ router.get('/google/callback', async (req, res) => {
     // So we use a code that frontend exchanges for cookies via POST
     const authCode = Math.floor(100000 + Math.random() * 900000).toString();
     
+    console.log('=== Storing OAuth Code ===');
+    console.log('User ID:', user.id);
+    console.log('User ID type:', typeof user.id);
+    console.log('User email:', user.email);
+    console.log('Generated code:', authCode);
+    
     // Clean up expired codes
     await supabase
       .from('otp')
@@ -1414,22 +1420,35 @@ router.get('/google/callback', async (req, res) => {
       .eq('purpose', 'google_oauth')
       .lt('expires_at', new Date().toISOString());
     
-    // Store code with user_id (most reliable lookup)
-    const { error: codeError } = await supabase
+    // Store code with user_id and email for reliable lookup
+    // Format: "user_id::email" so we can parse both
+    const insertData = {
+      email: `${user.id}::${user.email.toLowerCase()}`, // Store both user_id and email
+      otp_code: authCode,
+      purpose: 'google_oauth',
+      expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString() // 5 minutes
+    };
+    
+    console.log('Inserting OTP with data:', {
+      email: insertData.email,
+      otp_code: insertData.otp_code,
+      purpose: insertData.purpose,
+      expires_at: insertData.expires_at
+    });
+    
+    const { error: codeError, data: insertedData } = await supabase
       .from('otp')
-      .insert({
-        email: user.id, // Store user_id in email field for simplicity
-        otp_code: authCode,
-        purpose: 'google_oauth',
-        expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString() // 5 minutes
-      });
+      .insert(insertData)
+      .select();
     
     if (codeError) {
       console.error('Error storing OAuth code:', codeError);
+      console.error('Error details:', JSON.stringify(codeError, null, 2));
       return res.redirect(`${frontendUrl}/login?error=oauth_code_failed`);
     }
     
-    console.log('OAuth code stored:', authCode);
+    console.log('OAuth code stored successfully:', authCode);
+    console.log('Inserted OTP record:', insertedData);
     
     // Redirect to frontend with code
     const redirectUrl = `${frontendUrl}/auth/google/callback?code=${authCode}`;
@@ -1447,14 +1466,16 @@ router.get('/google/callback', async (req, res) => {
 router.post('/google/complete', async (req, res) => {
   console.log('=== Google Complete Endpoint Called ===');
   console.log('Request body:', req.body);
+  console.log('Request origin:', req.headers.origin);
   
   try {
     const { code } = req.body || {};
     if (!code || typeof code !== 'string') {
+      console.log('Missing or invalid code in request');
       return res.status(400).json({ success: false, message: 'Missing or invalid code' });
     }
     
-    console.log('Looking up code:', code);
+    console.log('Looking up code in database:', code);
     
     // Look up code
     const { data: codeData, error: codeError } = await supabase
@@ -1464,39 +1485,128 @@ router.post('/google/complete', async (req, res) => {
       .eq('purpose', 'google_oauth')
       .maybeSingle();
     
-    if (codeError || !codeData) {
-      console.warn('Code not found:', code);
+    console.log('Code lookup result:', { 
+      found: !!codeData, 
+      error: codeError,
+      codeData: codeData ? { email: codeData.email, expires_at: codeData.expires_at } : null
+    });
+    
+    if (codeError) {
+      console.error('Database error looking up code:', codeError);
+      return res.status(500).json({ success: false, message: 'Database error' });
+    }
+    
+    if (!codeData) {
+      console.warn('Code not found in database:', code);
       return res.status(401).json({ success: false, message: 'Invalid or expired code' });
     }
     
     // Check expiration
-    if (new Date(codeData.expires_at) < new Date()) {
+    const expiresAt = new Date(codeData.expires_at);
+    const now = new Date();
+    console.log('Checking expiration:', { expires_at: expiresAt, now: now, expired: expiresAt < now });
+    
+    if (expiresAt < now) {
+      console.log('Code expired, deleting it');
       await supabase.from('otp').delete().eq('otp_code', code).eq('purpose', 'google_oauth');
       return res.status(401).json({ success: false, message: 'Code expired' });
     }
     
     // Delete code (one-time use)
     await supabase.from('otp').delete().eq('otp_code', code).eq('purpose', 'google_oauth');
+    console.log('Code deleted after successful lookup');
     
-    // Look up user by ID (stored in email field)
-    const userId = codeData.email;
-    console.log('Looking up user by ID:', userId);
+    // Parse user_id and email from stored format: "user_id::email"
+    const storedValue = codeData.email;
+    console.log('Stored value from code data:', storedValue);
     
-    const { data: user, error: userError } = await supabase
+    let userId = null;
+    let userEmail = null;
+    
+    if (storedValue && storedValue.includes('::')) {
+      const parts = storedValue.split('::');
+      userId = parts[0];
+      userEmail = parts[1];
+      console.log('Parsed user_id:', userId);
+      console.log('Parsed email:', userEmail);
+    } else {
+      // Legacy format: just user_id
+      userId = storedValue;
+      console.log('Legacy format (user_id only):', userId);
+    }
+    
+    if (!userId) {
+      console.error('No user_id found in code data');
+      return res.status(500).json({ success: false, message: 'Invalid code data' });
+    }
+    
+    // Try to look up user by ID first (most reliable)
+    console.log('Querying users table for id:', userId);
+    let { data: user, error: userError } = await supabase
       .from('users')
       .select('id, email, name, phone, address')
       .eq('id', userId)
       .maybeSingle();
     
-    if (userError || !user) {
-      console.error('User not found for ID:', userId);
-      return res.status(404).json({ success: false, message: 'User not found' });
+    console.log('User lookup by ID result:', {
+      found: !!user,
+      error: userError,
+      userId: userId
+    });
+    
+    // Fallback: If ID lookup fails and we have email, try email lookup
+    if (!user && !userError && userEmail) {
+      console.log('ID lookup failed, trying email lookup:', userEmail);
+      const emailResult = await supabase
+        .from('users')
+        .select('id, email, name, phone, address')
+        .eq('email', userEmail.toLowerCase())
+        .maybeSingle();
+      user = emailResult.data;
+      userError = emailResult.error;
+      console.log('User lookup by email result:', {
+        found: !!user,
+        error: userError,
+        email: userEmail
+      });
     }
     
-    console.log('User found:', user.email);
+    if (userError) {
+      console.error('Database error looking up user:', userError);
+      console.error('Error details:', JSON.stringify(userError, null, 2));
+      return res.status(500).json({ success: false, message: 'Database error looking up user' });
+    }
+    
+    if (!user) {
+      console.error('=== USER NOT FOUND ===');
+      console.error('User ID from code:', userId);
+      console.error('User email from code:', userEmail);
+      console.error('Code data:', codeData);
+      console.error('Attempting to find user with any email in users table...');
+      
+      // Debug: Try to see if there are any users at all
+      const { data: allUsers, error: allUsersError } = await supabase
+        .from('users')
+        .select('id, email')
+        .limit(5);
+      
+      console.log('Sample users in database:', allUsers);
+      console.log('All users error:', allUsersError);
+      
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found. Please try signing in again.' 
+      });
+    }
+    
+    console.log('=== User found successfully ===');
+    console.log('User ID:', user.id);
+    console.log('User email:', user.email);
+    console.log('User name:', user.name);
     
     // Set auth cookies (this works because it's a POST request, not a redirect)
     setAuthCookies(res, user.id, user.email, req);
+    console.log('Auth cookies set successfully');
     
     res.json({
       success: true,
@@ -1510,6 +1620,7 @@ router.post('/google/complete', async (req, res) => {
     });
   } catch (e) {
     console.error('Google complete error:', e);
+    console.error('Error stack:', e.stack);
     res.status(500).json({ success: false, message: 'Failed to complete sign-in' });
   }
 });
