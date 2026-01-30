@@ -796,15 +796,33 @@ router.get('/me', async (req, res) => {
     }
     
     // Get user from database (use service_role key in production so RLS does not block this read)
-    const { data: user, error: userError } = await supabase
+    let { data: user, error: userError } = await supabase
       .from('users')
       .select('id, email, name, created_at, phone, address')
       .eq('id', decoded.userId)
       .maybeSingle();
 
+    // Fallback: look up by email (fixes admin/other accounts when id mismatch or RLS blocks by id)
+    if ((userError || !user) && decoded.email) {
+      console.warn('⚠️  /me user not found by id, trying by email:', { userId: decoded.userId, email: decoded.email });
+      const byEmail = await supabase
+        .from('users')
+        .select('id, email, name, created_at, phone, address')
+        .eq('email', decoded.email)
+        .maybeSingle();
+      if (byEmail.error) {
+        console.warn('⚠️  /me fallback by email failed:', byEmail.error?.message || byEmail.error);
+      } else if (byEmail.data) {
+        user = byEmail.data;
+        userError = null;
+        console.log('✅ /me resolved user by email (id lookup had failed)');
+      }
+    }
+
     if (userError || !user) {
       console.warn('⚠️  /me user not found:', {
         userId: decoded.userId,
+        email: decoded.email,
         userError: userError?.message || userError,
         code: userError?.code,
         hint: 'Ensure SUPABASE_KEY is the service_role key (not anon) so RLS does not block reads.'
