@@ -461,7 +461,7 @@ Server will start on `http://localhost:3000` (or PORT from .env)
 | `FRONTEND_URL` | Frontend URL for CORS | Yes | - |
 | `BACKEND_URL` | Backend URL for OAuth callbacks | Yes | - |
 | `SUPABASE_URL` | Supabase project URL | Yes | - |
-| `SUPABASE_KEY` | Supabase anon/service key | Yes | - |
+| `SUPABASE_KEY` | Supabase **service_role** key (required for /auth/me and server-side reads; anon key can block due to RLS) | Yes | - |
 | `JWT_SECRET` | JWT signing secret | Yes | - |
 | `BREVO_API_KEY` | Brevo API key | Yes | - |
 | `BREVO_FROM_EMAIL` | Sender email address | No | knowhowcafe2025@gmail.com |

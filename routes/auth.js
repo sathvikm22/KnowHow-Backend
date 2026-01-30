@@ -795,7 +795,7 @@ router.get('/me', async (req, res) => {
       });
     }
     
-    // Get user from database
+    // Get user from database (use service_role key in production so RLS does not block this read)
     const { data: user, error: userError } = await supabase
       .from('users')
       .select('id, email, name, created_at, phone, address')
@@ -803,6 +803,12 @@ router.get('/me', async (req, res) => {
       .maybeSingle();
 
     if (userError || !user) {
+      console.warn('⚠️  /me user not found:', {
+        userId: decoded.userId,
+        userError: userError?.message || userError,
+        code: userError?.code,
+        hint: 'Ensure SUPABASE_KEY is the service_role key (not anon) so RLS does not block reads.'
+      });
       return res.status(404).json({ 
         success: false, 
         message: 'User not found' 
