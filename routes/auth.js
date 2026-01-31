@@ -418,28 +418,28 @@ router.post('/login', async (req, res) => {
     }
 
     console.log('✅ User found:', user.email, 'ID:', user.id);
+    // Support both "password" and "password_hash" column names so all accounts work
+    const storedPassword = user.password || user.password_hash;
     console.log('🔍 Checking password...');
-    console.log('   Has password field:', !!user.password);
-    console.log('   Password field type:', typeof user.password);
-    console.log('   Password field length:', user.password?.length);
+    console.log('   Has password field:', !!storedPassword);
 
     // Verify password
     try {
-      const isPasswordValid = await comparePassword(password, user.password);
+      const isPasswordValid = await comparePassword(password, storedPassword);
       console.log('🔐 Password comparison result:', isPasswordValid);
-      
+
       if (!isPasswordValid) {
         console.warn('⚠️  Invalid password for user:', user.email);
-        return res.status(401).json({ 
-          success: false, 
-          message: 'Invalid email or password' 
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid email or password'
         });
       }
     } catch (compareError) {
       console.error('❌ Error comparing password:', compareError);
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid email or password' 
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
       });
     }
 
@@ -447,11 +447,11 @@ router.post('/login', async (req, res) => {
 
     // Check if user has a valid password hash (OAuth users might have random passwords)
     // If password field is missing or empty, user might be OAuth-only
-    if (!user.password || user.password.trim() === '') {
+    if (!storedPassword || (typeof storedPassword === 'string' && storedPassword.trim() === '')) {
       console.warn('⚠️  User has no password set - might be OAuth-only user');
-      return res.status(401).json({ 
-        success: false, 
-        message: 'This account was created with Google. Please use "Sign in with Google" instead.' 
+      return res.status(401).json({
+        success: false,
+        message: 'This account was created with Google. Please use "Sign in with Google" instead.'
       });
     }
 
@@ -473,6 +473,9 @@ router.post('/login', async (req, res) => {
     setAuthCookies(res, user.id, user.email, req);
     console.log('✅ Auth cookies set successfully');
 
+    // Support both "name" and "full_name" so all accounts (including admin) get a display name
+    const displayName = user.name || user.full_name || user.email || 'User';
+
     // DO NOT return tokens in response body (security best practice)
     res.json({ 
       success: true, 
@@ -480,7 +483,7 @@ router.post('/login', async (req, res) => {
       user: {
         id: user.id,
         email: user.email,
-        name: user.name
+        name: displayName
       },
       isAdmin
       // Tokens are in HttpOnly cookies only
@@ -795,19 +798,19 @@ router.get('/me', async (req, res) => {
       });
     }
     
-    // Get user from database (use service_role key in production so RLS does not block this read)
+    // Get user from database - use select('*') so both "name" and "full_name" schemas work
     let { data: user, error: userError } = await supabase
       .from('users')
-      .select('id, email, name, created_at, phone, address')
+      .select('*')
       .eq('id', decoded.userId)
       .maybeSingle();
 
-    // Fallback: look up by email (fixes admin/other accounts when id mismatch or RLS blocks by id)
+    // Fallback: look up by email (fixes admin and any account when id lookup fails)
     if ((userError || !user) && decoded.email) {
       console.warn('⚠️  /me user not found by id, trying by email:', { userId: decoded.userId, email: decoded.email });
       const byEmail = await supabase
         .from('users')
-        .select('id, email, name, created_at, phone, address')
+        .select('*')
         .eq('email', decoded.email)
         .maybeSingle();
       if (byEmail.error) {
@@ -833,12 +836,15 @@ router.get('/me', async (req, res) => {
       });
     }
 
+    // Support both "name" and "full_name" columns so all accounts (including admin) work
+    const displayName = user.name || user.full_name || user.email || 'User';
+
     res.json({ 
       success: true, 
       user: {
         id: user.id,
         email: user.email,
-        name: user.name,
+        name: displayName,
         phone: user.phone || null,
         address: user.address || null
       }
