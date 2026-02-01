@@ -1392,18 +1392,8 @@ router.get('/available-slots', async (req, res) => {
       });
     }
 
-    // Get all time slots for the activity (from Booking.tsx logic)
-    // Handle different activity name variations
-    let timeSlots = [];
-    const normalizedActivityName = activity_name.toLowerCase().trim();
-    
-    if (normalizedActivityName.includes('jewellery') || normalizedActivityName.includes('jewelry making')) {
-      timeSlots = ['11am-1pm', '1-3pm', '3-5pm', '5-7pm', '7-9pm'];
-    } else if (normalizedActivityName.includes('tufting')) {
-      timeSlots = ['11am-1:30pm', '2-4:30pm', '5-7:30pm'];
-    } else {
-      timeSlots = ['11am-1pm', '1-3pm', '3-5pm', '5-8pm'];
-    }
+    // All activities use 2-hour slots from 12pm to 8pm
+    const timeSlots = ['12pm-2pm', '2pm-4pm', '4pm-6pm', '6pm-8pm'];
 
     console.log('Fetching available slots:', { activity_name, booking_date, timeSlots });
 
