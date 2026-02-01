@@ -119,7 +119,7 @@ router.get('/activities', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('activities')
-      .select('id, name, description, image_url, category, price, created_at, updated_at')
+      .select('id, name, description, image_url, price, created_at, updated_at')
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -144,14 +144,10 @@ router.get('/activities', async (req, res) => {
 // Create activity (Admin only)
 router.post('/activities', verifyAdmin, async (req, res) => {
   try {
-    const { name, description, image_url, category, price } = req.body;
+    const { name, description, image_url, price } = req.body;
 
     if (!name || !description) {
       return res.status(400).json({ success: false, message: 'Name and description are required' });
-    }
-
-    if (category && !['group', 'individual'].includes(category)) {
-      return res.status(400).json({ success: false, message: 'Category must be either "group" or "individual"' });
     }
 
     const activityPrice = price !== undefined && price !== null ? parseFloat(price) : 0;
@@ -159,7 +155,7 @@ router.post('/activities', verifyAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Price must be a non-negative number' });
     }
 
-    console.log('📝 Creating activity:', { name, description, image_url, category, price: activityPrice });
+    console.log('📝 Creating activity:', { name, description, image_url, price: activityPrice });
     console.log('   Image URL received:', image_url);
     console.log('   Image URL type:', typeof image_url);
 
@@ -167,7 +163,6 @@ router.post('/activities', verifyAdmin, async (req, res) => {
       name,
       description,
       image_url: image_url && image_url.trim() !== '' ? image_url.trim() : null,
-      category: category || 'group',
       price: activityPrice
     };
     
@@ -201,14 +196,10 @@ router.post('/activities', verifyAdmin, async (req, res) => {
 router.put('/activities/:id', verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, image_url, category, price } = req.body;
+    const { name, description, image_url, price } = req.body;
 
     if (!name || !description) {
       return res.status(400).json({ success: false, message: 'Name and description are required' });
-    }
-
-    if (category && !['group', 'individual'].includes(category)) {
-      return res.status(400).json({ success: false, message: 'Category must be either "group" or "individual"' });
     }
 
     const activityPrice = price !== undefined && price !== null ? parseFloat(price) : undefined;
@@ -216,7 +207,7 @@ router.put('/activities/:id', verifyAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Price must be a non-negative number' });
     }
 
-    console.log('📝 Updating activity:', { id, name, description, image_url, category, price: activityPrice });
+    console.log('📝 Updating activity:', { id, name, description, image_url, price: activityPrice });
     console.log('   Image URL received:', image_url);
     console.log('   Image URL type:', typeof image_url);
     console.log('   Image URL length:', image_url?.length);
@@ -248,10 +239,6 @@ router.put('/activities/:id', verifyAdmin, async (req, res) => {
       image_url: newImageUrl
     };
 
-    // Only update category and price if provided
-    if (category !== undefined) {
-      updateData.category = category;
-    }
     if (activityPrice !== undefined) {
       updateData.price = activityPrice;
     }
