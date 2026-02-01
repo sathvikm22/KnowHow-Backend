@@ -97,17 +97,18 @@ router.post('/create-order', async (req, res) => {
       });
     }
 
-    // Get user ID from token
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    // Get user ID from token (cookie first - frontend sends auth via HttpOnly cookie; fallback to Authorization header)
+    const accessToken = req.cookies?.accessToken || req.headers.authorization?.replace('Bearer ', '');
     let userId = null;
     let userEmail = customerEmail;
 
-    if (token) {
+    if (accessToken) {
       try {
-        const jwt = await import('jsonwebtoken');
-        const decoded = jwt.default.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production');
-        userId = decoded.userId;
-        userEmail = decoded.email || customerEmail;
+        const decoded = verifyAccessToken(accessToken);
+        if (decoded) {
+          userId = decoded.userId;
+          userEmail = decoded.email || customerEmail;
+        }
       } catch (err) {
         console.log('Token verification failed, proceeding without user ID');
       }
@@ -1272,13 +1273,16 @@ router.get('/my-bookings', async (req, res) => {
       });
     }
 
-    // Build query
+    // Build query: show bookings for this user (by user_id and/or user_email so existing rows with only email also show)
     let query = supabase
       .from('bookings')
       .select('*')
       .order('created_at', { ascending: false });
 
-    if (userId) {
+    if (userId && userEmail) {
+      const emailFilter = `user_email.eq.${JSON.stringify(userEmail)}`;
+      query = query.or(`user_id.eq.${userId},${emailFilter}`);
+    } else if (userId) {
       query = query.eq('user_id', userId);
     } else if (userEmail) {
       query = query.eq('user_email', userEmail);
