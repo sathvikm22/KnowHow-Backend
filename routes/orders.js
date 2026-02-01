@@ -32,6 +32,13 @@ const getCashfreeHeaders = () => {
   };
 };
 
+// Cashfree requires customer_id to be alphanumeric with only underscore or hyphen (no @ or .)
+const toCashfreeCustomerId = (value) => {
+  if (!value || typeof value !== 'string') return 'guest';
+  const sanitized = value.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'guest';
+  return sanitized.slice(0, 50);
+};
+
 // Initialize Cashfree
 if (isCashfreeConfigured()) {
   console.log('✅ Cashfree initialized successfully for orders');
@@ -155,7 +162,7 @@ router.post('/create-diy-order', async (req, res) => {
       order_amount: orderAmount,
       order_currency: 'INR',
       customer_details: {
-        customer_id: userId || customerEmail,
+        customer_id: toCashfreeCustomerId(userId || customerEmail),
         customer_name: customerName,
         customer_email: customerEmail,
         customer_phone: formattedPhone,

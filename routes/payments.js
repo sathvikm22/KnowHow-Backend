@@ -42,6 +42,13 @@ const getCashfreeHeaders = () => {
   };
 };
 
+// Cashfree requires customer_id to be alphanumeric with only underscore or hyphen (no @ or .)
+const toCashfreeCustomerId = (value) => {
+  if (!value || typeof value !== 'string') return 'guest';
+  const sanitized = value.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'guest';
+  return sanitized.slice(0, 50); // Cashfree typically allows up to 50 chars
+};
+
 // Create Cashfree payment session (for bookings)
 router.post('/create-order', async (req, res) => {
   try {
@@ -171,7 +178,7 @@ router.post('/create-order', async (req, res) => {
       order_amount: orderAmount,
       order_currency: 'INR',
       customer_details: {
-        customer_id: userId || customerEmail,
+        customer_id: toCashfreeCustomerId(userId || customerEmail),
         customer_name: customerName,
         customer_email: customerEmail,
         customer_phone: formattedPhone,
@@ -1069,7 +1076,7 @@ router.post('/update-booking/:booking_id', async (req, res) => {
           order_amount: balanceAmount,
           order_currency: 'INR',
           customer_details: {
-            customer_id: booking.user_id || booking.user_email,
+            customer_id: toCashfreeCustomerId(booking.user_id || booking.user_email),
             customer_name: booking.user_name,
             customer_email: booking.user_email,
             customer_phone: booking.user_phone,
