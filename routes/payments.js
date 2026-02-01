@@ -1284,7 +1284,7 @@ router.get('/my-bookings', async (req, res) => {
       query = query.eq('user_email', userEmail);
     }
 
-    const { data: bookings, error } = await query;
+    const { data: rawBookings, error } = await query;
 
     if (error) {
       console.error('Error fetching bookings:', error);
@@ -1294,9 +1294,18 @@ router.get('/my-bookings', async (req, res) => {
       });
     }
 
+    // Map DB columns (user_*) to API fields (customer_*) so order history shows name/contact, not raw user fields
+    const bookings = (rawBookings || []).map((b) => ({
+      ...b,
+      customer_name: b.customer_name ?? b.user_name,
+      customer_email: b.customer_email ?? b.user_email,
+      customer_phone: b.customer_phone ?? b.user_phone,
+      customer_address: b.customer_address ?? b.user_address
+    }));
+
     res.json({
       success: true,
-      bookings: bookings || []
+      bookings
     });
   } catch (error) {
     console.error('Error fetching bookings:', error);
