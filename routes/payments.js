@@ -1261,11 +1261,10 @@ router.get('/my-bookings', async (req, res) => {
       }
     }
 
-    // If no token, try to get email from query (for guest bookings lookup)
-    if (!userId && !userEmail) {
+    // Fallback: email from query (when cookie not sent e.g. cross-origin, or to match by email)
+    if (!userEmail && req.query.email) {
       userEmail = req.query.email;
     }
-
     if (!userId && !userEmail) {
       return res.status(401).json({
         success: false,
@@ -1273,30 +1272,43 @@ router.get('/my-bookings', async (req, res) => {
       });
     }
 
-    // Build query: show bookings for this user (by user_id and/or user_email so existing rows with only email also show)
-    let query = supabase
-      .from('bookings')
-      .select('*')
-      .order('created_at', { ascending: false });
+    // Fetch by user_id and/or user_email (two queries then merge so we don't rely on .or() syntax)
+    const seenIds = new Set();
+    let rawBookings = [];
 
-    if (userId && userEmail) {
-      const emailFilter = `user_email.eq.${JSON.stringify(userEmail)}`;
-      query = query.or(`user_id.eq.${userId},${emailFilter}`);
-    } else if (userId) {
-      query = query.eq('user_id', userId);
-    } else if (userEmail) {
-      query = query.eq('user_email', userEmail);
+    if (userId) {
+      const { data: byUserId, error: err1 } = await supabase
+        .from('bookings')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+      if (!err1 && byUserId) {
+        byUserId.forEach((b) => {
+          if (!seenIds.has(b.id)) {
+            seenIds.add(b.id);
+            rawBookings.push(b);
+          }
+        });
+      }
+    }
+    if (userEmail) {
+      const { data: byEmail, error: err2 } = await supabase
+        .from('bookings')
+        .select('*')
+        .eq('user_email', userEmail)
+        .order('created_at', { ascending: false });
+      if (!err2 && byEmail) {
+        byEmail.forEach((b) => {
+          if (!seenIds.has(b.id)) {
+            seenIds.add(b.id);
+            rawBookings.push(b);
+          }
+        });
+      }
     }
 
-    const { data: rawBookings, error } = await query;
-
-    if (error) {
-      console.error('Error fetching bookings:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to fetch bookings'
-      });
-    }
+    // Sort merged list by created_at descending
+    rawBookings.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     // Map DB columns (user_*) to API fields (customer_*) so order history shows name/contact, not raw user fields
     const bookings = (rawBookings || []).map((b) => ({

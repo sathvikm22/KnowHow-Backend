@@ -439,6 +439,10 @@ router.get('/my-diy-orders', async (req, res) => {
       userEmail = req.query.email;
     }
 
+    // Fallback: email from query (when cookie not sent e.g. cross-origin)
+    if (!userEmail && req.query.email) {
+      userEmail = req.query.email;
+    }
     if (!userId && !userEmail) {
       return res.status(401).json({
         success: false,
@@ -446,31 +450,44 @@ router.get('/my-diy-orders', async (req, res) => {
       });
     }
 
-    let query = supabase
-      .from('orders')
-      .select('*')
-      .eq('status', 'paid')
-      .order('created_at', { ascending: false });
+    // Fetch by session_user_id and/or customer_email (two queries then merge)
+    const seenIds = new Set();
+    let orders = [];
 
-    // Show orders for this user (by session_user_id and/or customer_email so existing rows with only email also show)
-    if (userId && userEmail) {
-      const emailFilter = `customer_email.eq.${JSON.stringify(userEmail)}`;
-      query = query.or(`session_user_id.eq.${userId},${emailFilter}`);
-    } else if (userId) {
-      query = query.eq('session_user_id', userId);
-    } else if (userEmail) {
-      query = query.eq('customer_email', userEmail);
+    if (userId) {
+      const { data: byUserId, error: err1 } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('status', 'paid')
+        .eq('session_user_id', userId)
+        .order('created_at', { ascending: false });
+      if (!err1 && byUserId) {
+        byUserId.forEach((o) => {
+          if (!seenIds.has(o.id)) {
+            seenIds.add(o.id);
+            orders.push(o);
+          }
+        });
+      }
+    }
+    if (userEmail) {
+      const { data: byEmail, error: err2 } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('status', 'paid')
+        .eq('customer_email', userEmail)
+        .order('created_at', { ascending: false });
+      if (!err2 && byEmail) {
+        byEmail.forEach((o) => {
+          if (!seenIds.has(o.id)) {
+            seenIds.add(o.id);
+            orders.push(o);
+          }
+        });
+      }
     }
 
-    const { data: orders, error } = await query;
-
-    if (error) {
-      console.error('Error fetching orders:', error);
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to fetch orders'
-      });
-    }
+    orders.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     res.json({
       success: true,

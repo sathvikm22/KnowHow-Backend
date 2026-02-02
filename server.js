@@ -42,6 +42,10 @@ const corsOptions = {
     if (extra.length) allowedOrigins.push(...extra);
 
     if (allowedOrigins.includes(origin)) return callback(null, true);
+    // In development, allow local network IPs (e.g. http://192.168.x.x:8080 for phone/tablet testing)
+    if (!isProduction && /^https?:\/\/(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
     console.warn(`⚠️  CORS blocked origin: ${origin}`);
     return callback(new Error(`Not allowed by CORS: ${origin}`));
   },
